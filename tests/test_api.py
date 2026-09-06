@@ -21,6 +21,11 @@ def test_invalid_latitude():
     assert client.post('/api/location', json=body, headers=AUTH).status_code == 422
 
 
+def test_tracking_requires_registered_device():
+    assert client.post('/api/tracking/start', headers=AUTH).status_code == 409
+    assert client.get('/api/tracking/status', headers=AUTH).status_code == 409
+
+
 def test_register_upload_and_history():
     assert client.post('/api/device/register', json={'device_id':'phone-1'}, headers=AUTH).status_code == 200
     assert client.post('/api/tracking/start', headers=AUTH).status_code == 200

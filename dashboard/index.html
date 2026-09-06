@@ -26,7 +26,7 @@
       <article class="card">
         <h2>Current Location</h2>
         <dl><dt>Latitude</dt><dd id="lat">--</dd><dt>Longitude</dt><dd id="lon">--</dd><dt>Accuracy</dt><dd id="accuracy">--</dd><dt>Last Update</dt><dd id="updated">--</dd><dt>Battery</dt><dd id="battery">--</dd><dt>Network</dt><dd id="network">--</dd></dl>
-        <div class="controls"><button id="start">START TRACKING</button><button id="stop" class="danger">STOP TRACKING</button><button id="refresh">REFRESH LOCATION</button><button id="logout" class="secondary">LOCK DASHBOARD</button></div>
+        <p class="hint">An authorized Android device must be registered before tracking can start.</p><p id="action-message" class="message" role="status"></p><div class="controls"><button id="start">START TRACKING</button><button id="stop" class="danger">STOP TRACKING</button><button id="refresh">REFRESH LOCATION</button><button id="logout" class="secondary">LOCK DASHBOARD</button></div>
       </article>
       <article class="card map-card"><h2>Live Map</h2><div id="map" aria-label="Current location map"></div></article>
     </section>

@@ -115,7 +115,8 @@ def location_history(_: Auth, db: Session = Depends(get_db), limit: int = Query(
 def tracking_status(_: Auth, db: Session = Depends(get_db)):
     device = db.scalar(select(Device).order_by(Device.last_seen.desc().nullslast()).limit(1))
     if device is None:
-        raise HTTPException(status_code=404, detail="Device not registered")
+        logger.warning("tracking status requested without a registered device")
+        raise HTTPException(status_code=409, detail="Authorized device not registered")
     latest = db.scalar(select(Location).where(Location.device_id == device.device_id).order_by(Location.timestamp.desc()).limit(1))
     return TrackingStatus(device_id=device.device_id, tracking_enabled=device.tracking_enabled, last_update=latest.timestamp if latest else None, gps_accuracy=latest.accuracy if latest else None, battery=latest.battery if latest else None, network_status="online" if device.last_seen and utcnow() - device.last_seen < timedelta(minutes=5) else "offline")
 
@@ -123,7 +124,8 @@ def tracking_status(_: Auth, db: Session = Depends(get_db)):
 def set_tracking(enabled: bool, db: Session):
     device = db.scalar(select(Device).order_by(Device.last_seen.desc().nullslast()).limit(1))
     if device is None:
-        raise HTTPException(status_code=404, detail="Device not registered")
+        logger.warning("tracking transition rejected enabled=%s reason=authorized_device_not_registered", enabled)
+        raise HTTPException(status_code=409, detail="Authorized device not registered")
     device.tracking_enabled = enabled
     db.commit()
     return {"tracking_enabled": enabled}

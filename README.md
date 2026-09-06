@@ -64,7 +64,7 @@ Both should return `{"status":"ok"}`. The default proxy target is `https://perso
 
 Register the authorized Android device with `POST /api/device/register`, call `POST /api/tracking/start`, and send location payloads to `POST /api/location` every 30 seconds while tracking is active. Use `GET /api/location/latest`, `GET /api/location/history?limit=100`, and `GET /api/tracking/status` for reads. Stop with `POST /api/tracking/stop`; delete history only after a deliberate `DELETE /api/location/history` request.
 
-Protected requests require `Authorization: Bearer $API_TOKEN`. Coordinates and numeric fields are validated server-side. The backend rejects uploads from unregistered devices and rejects uploads when tracking is disabled.
+Protected requests require `Authorization: Bearer $API_TOKEN`. Coordinates and numeric fields are validated server-side. The backend rejects uploads from unregistered devices and rejects uploads when tracking is disabled. `POST /api/tracking/start` and `GET /api/tracking/status` require at least one authorized device registered through `POST /api/device/register`; without one they return HTTP 409 with `Authorized device not registered`. The dashboard displays that safe response directly instead of mislabeling it as an API outage.
 
 ## Telegram bot
 

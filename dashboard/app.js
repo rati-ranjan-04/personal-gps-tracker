@@ -9,13 +9,23 @@ const $ = (id) => document.getElementById(id);
 const show = (id, value) => { $(id).textContent = value ?? '--'; };
 function setState(text, active = false) { $('tracking').textContent = text; $('tracking').className = `badge ${active ? 'active' : ''}`; }
 function setSetupMessage(text, error = false) { $('setup-message').textContent = text; $('setup-message').className = `message ${error ? 'error' : ''}`; }
+function setActionMessage(text, error = false) { $('action-message').textContent = text; $('action-message').className = `message ${error ? 'error' : ''}`; }
 function setControls(enabled) { ['start', 'stop', 'refresh', 'clear', 'logout'].forEach((id) => { $(id).disabled = !enabled; }); }
+function isDeviceNotRegistered(error) { return [404, 409].includes(error.status) && /device not registered/i.test(error.detail || ''); }
 function showLogin(message = '') { authenticated = false; setState('LOCKED'); $('setup').classList.remove('hidden'); setControls(false); if (message) setSetupMessage(message, true); }
 function showDashboard() { authenticated = true; setState('CONNECTED'); $('setup').classList.add('hidden'); setControls(true); }
 
 async function request(path, options = {}) {
   const response = await fetch(path, { ...options, credentials: 'include', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
-  if (!response.ok) { const error = new Error(`HTTP_${response.status}`); error.status = response.status; throw error; }
+  if (!response.ok) {
+    const raw = await response.text();
+    let detail = raw;
+    try { detail = JSON.parse(raw).detail || raw; } catch { /* keep plain text */ }
+    const error = new Error(String(detail).slice(0, 240));
+    error.status = response.status;
+    error.detail = String(detail).slice(0, 240);
+    throw error;
+  }
   return response.status === 204 ? null : response.json();
 }
 async function refresh() {
@@ -40,12 +50,18 @@ async function refresh() {
   } catch (error) {
     console.error(error);
     if (error.status === 401) showLogin('Your dashboard session expired. Enter the token again.');
-    else { setState('API UNAVAILABLE'); setSetupMessage('The backend is unavailable. Render may be sleeping or its deployment needs attention.', true); }
+    else if (isDeviceNotRegistered(error)) { setState('DEVICE NOT REGISTERED'); setActionMessage('Register the authorized Android device before starting tracking.', true); }
+    else { setState('API UNAVAILABLE'); setSetupMessage(`Backend request failed (${error.status || 'network error'}): ${error.detail || 'Render may be sleeping or its deployment needs attention.'}`, true); }
   }
 }
 async function toggle(path) {
-  try { await request(path, { method: 'POST' }); await refresh(); }
-  catch (error) { alert(error.status === 401 ? 'Your dashboard session expired. Connect again.' : 'Could not change tracking state. Check the backend deployment logs.'); }
+  setActionMessage('Sending request…');
+  try { const result = await request(path, { method: 'POST' }); setActionMessage(result?.tracking_enabled ? 'Tracking enabled.' : 'Tracking disabled.'); await refresh(); }
+  catch (error) {
+    if (error.status === 401) { showLogin('Your dashboard session expired. Connect again.'); return; }
+    if (isDeviceNotRegistered(error)) { setState('DEVICE NOT REGISTERED'); setActionMessage('Tracking cannot start until the authorized Android device is registered.', true); return; }
+    setActionMessage(`Tracking request failed (${error.status || 'network error'}): ${error.detail || 'Backend unavailable.'}`, true);
+  }
 }
 $('setup-form').addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -58,7 +74,7 @@ $('setup-form').addEventListener('submit', async (event) => {
     showDashboard();
     setSetupMessage('Connected securely.');
     await refresh();
-  } catch (error) { showLogin(error.status === 401 ? 'Invalid token. Use the API_TOKEN configured in Vercel and Render.' : 'Dashboard authentication is not configured.'); }
+  } catch (error) { showLogin(error.status === 401 ? 'Invalid token. Use the API_TOKEN configured in Vercel and Render.' : (error.detail || 'Dashboard authentication is not configured.')); }
 });
 $('logout').onclick = async () => { try { await request('/api/session', { method: 'DELETE' }); } finally { showLogin('Dashboard locked.'); } };
 $('start').onclick = () => toggle('/api/tracking/start');

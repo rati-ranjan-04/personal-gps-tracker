@@ -32,7 +32,7 @@ module.exports = async function handler(req, res) {
     return res.status(405).json({ detail: 'Method not allowed' });
   }
   const token = process.env.API_TOKEN;
-  if (!token) return res.status(500).json({ detail: 'Dashboard authentication is not configured' });
+  if (!token) return res.status(500).json({ detail: 'Missing server-side Vercel environment variable: API_TOKEN' });
 
   const parts = requestedPath(req);
   if (!parts.length || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) {

@@ -20,7 +20,7 @@ function cookieValue(header = '') {
 
 module.exports = async function handler(req, res) {
   const expectedToken = process.env.API_TOKEN;
-  if (!expectedToken) return res.status(500).json({ detail: 'Dashboard authentication is not configured' });
+  if (!expectedToken) return res.status(500).json({ detail: 'Missing server-side Vercel environment variable: API_TOKEN' });
 
   if (req.method === 'POST') {
     const suppliedToken = typeof req.body === 'string' ? JSON.parse(req.body || '{}').token : req.body?.token;

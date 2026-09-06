@@ -50,6 +50,11 @@ async def request_logging(request: Request, call_next):
     return response
 
 
+@app.get("/", response_model=Health)
+def root(_: None = Depends(rate_limit)):
+    return {"status": "ok"}
+
+
 @app.get("/api/health", response_model=Health)
 def health(_: None = Depends(rate_limit)):
     return {"status": "ok"}

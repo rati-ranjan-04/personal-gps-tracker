@@ -11,15 +11,14 @@
   <main>
     <header>
       <div><h1>Personal GPS Tracker</h1><p class="subtitle">Explicit-permission device tracking</p></div>
-      <span id="tracking" class="badge">NOT CONFIGURED</span>
+      <span id="tracking" class="badge">LOCKED</span>
     </header>
     <section id="setup" class="card setup-card">
-      <h2>Connect your backend</h2>
-      <p>Enter the HTTPS URL of your authorized FastAPI backend and its bearer token. This dashboard does not locate devices by phone number.</p>
+      <h2>Secure dashboard access</h2>
+      <p>Enter the private dashboard token once. The token is checked by Vercel server-side and is never stored in browser storage or sent to the Render URL. This dashboard does not locate devices by phone number.</p>
       <form id="setup-form" class="setup-form">
-        <label>Backend URL<input id="api-url" type="url" placeholder="https://your-api.example.com" required></label>
-        <label>API token<input id="api-token" type="password" placeholder="Bearer token" autocomplete="off" required></label>
-        <button type="submit">SAVE AND CONNECT</button>
+        <label>Dashboard token<input id="api-token" type="password" placeholder="Enter your secure token" autocomplete="current-password" required></label>
+        <button type="submit">CONNECT SECURELY</button>
       </form>
       <p id="setup-message" class="message" role="status"></p>
     </section>
@@ -27,7 +26,7 @@
       <article class="card">
         <h2>Current Location</h2>
         <dl><dt>Latitude</dt><dd id="lat">--</dd><dt>Longitude</dt><dd id="lon">--</dd><dt>Accuracy</dt><dd id="accuracy">--</dd><dt>Last Update</dt><dd id="updated">--</dd><dt>Battery</dt><dd id="battery">--</dd><dt>Network</dt><dd id="network">--</dd></dl>
-        <div class="controls"><button id="start">START TRACKING</button><button id="stop" class="danger">STOP TRACKING</button><button id="refresh">REFRESH LOCATION</button></div>
+        <div class="controls"><button id="start">START TRACKING</button><button id="stop" class="danger">STOP TRACKING</button><button id="refresh">REFRESH LOCATION</button><button id="logout" class="secondary">LOCK DASHBOARD</button></div>
       </article>
       <article class="card map-card"><h2>Live Map</h2><div id="map" aria-label="Current location map"></div></article>
     </section>

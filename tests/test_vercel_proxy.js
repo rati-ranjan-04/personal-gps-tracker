@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const session = require('../dashboard/api/session.js');
 const proxy = require('../dashboard/api/[...path].js');
+const start = require('../dashboard/api/tracking/start.js');
 
 process.env.API_TOKEN = 'test-only-secret-token';
 
@@ -26,7 +27,11 @@ function invoke(handler, request) {
 
   const originalFetch = global.fetch;
   let upstreamAuthorization = '';
-  global.fetch = async (_url, options) => {
+  let upstreamMethod = '';
+  let upstreamUrl = '';
+  global.fetch = async (url, options) => {
+    upstreamUrl = String(url);
+    upstreamMethod = options.method;
     upstreamAuthorization = options.headers.Authorization;
     return new Response(JSON.stringify({ tracking_enabled: false }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -34,8 +39,15 @@ function invoke(handler, request) {
   assert.equal(proxied.statusCode, 200);
   assert.equal(upstreamAuthorization, `Bearer ${process.env.API_TOKEN}`);
 
+  const started = await invoke(start, { method: 'POST', headers: { cookie } });
+  assert.equal(started.statusCode, 200);
+  assert.equal(upstreamMethod, 'POST');
+  assert.equal(upstreamUrl, 'https://personal-gps-tracker.onrender.com/api/tracking/start');
+
   const unauthorized = await invoke(proxy, { method: 'GET', url: '/api/tracking/status', query: { path: ['tracking', 'status'] }, headers: {} });
   assert.equal(unauthorized.statusCode, 401);
+  const unauthorizedStart = await invoke(start, { method: 'POST', headers: {} });
+  assert.equal(unauthorizedStart.statusCode, 401);
   global.fetch = originalFetch;
   console.log('vercel proxy smoke test passed');
 })().catch((error) => { console.error(error); process.exit(1); });

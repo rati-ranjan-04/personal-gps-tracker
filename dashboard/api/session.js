@@ -1,29 +1,21 @@
-const crypto = require('crypto');
-
-const COOKIE_NAME = 'gps_tracker_session';
-const SESSION_MESSAGE = 'personal-gps-tracker-dashboard-session';
-
-function sessionValue(token) {
-  return crypto.createHmac('sha256', token).update(SESSION_MESSAGE).digest('base64url');
-}
-
-function safeEqual(left, right) {
-  const a = Buffer.from(left || '');
-  const b = Buffer.from(right || '');
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function cookieValue(header = '') {
-  const match = header.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${COOKIE_NAME}=`));
-  return match ? decodeURIComponent(match.slice(COOKIE_NAME.length + 1)) : '';
-}
+const {
+  COOKIE_NAME,
+  sessionValue,
+  safeEqual,
+  cookieValue,
+  configuredToken,
+} = require('../lib/auth');
 
 module.exports = async function handler(req, res) {
-  const expectedToken = process.env.API_TOKEN;
+  const expectedToken = configuredToken();
   if (!expectedToken) return res.status(500).json({ detail: 'Missing server-side Vercel environment variable: API_TOKEN' });
 
   if (req.method === 'POST') {
-    const suppliedToken = typeof req.body === 'string' ? JSON.parse(req.body || '{}').token : req.body?.token;
+    let payload = req.body;
+    if (typeof payload === 'string') {
+      try { payload = JSON.parse(payload || '{}'); } catch { payload = {}; }
+    }
+    const suppliedToken = payload?.token;
     if (!suppliedToken || !safeEqual(String(suppliedToken), String(expectedToken))) {
       return res.status(401).json({ detail: 'Invalid dashboard token' });
     }

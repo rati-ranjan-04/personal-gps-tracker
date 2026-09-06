@@ -1,4 +1,5 @@
 let authenticated = false;
+const API = window.TRACKER_API;
 const map = L.map('map').setView([20.2961, 85.8245], 13);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map);
 let marker = null;
@@ -31,7 +32,7 @@ async function request(path, options = {}) {
 async function refresh() {
   if (!authenticated) return;
   try {
-    const [status, history] = await Promise.all([request('/api/tracking/status'), request('/api/location/history?limit=100')]);
+    const [status, history] = await Promise.all([request(API.trackingStatus), request(`${API.history}?limit=100`)]);
     setState(status.tracking_enabled ? 'TRACKING ACTIVE' : 'TRACKING OFF', status.tracking_enabled);
     show('accuracy', status.gps_accuracy == null ? '--' : `${status.gps_accuracy} m`);
     show('updated', status.last_update ? new Date(status.last_update).toLocaleString() : '--');
@@ -69,18 +70,18 @@ $('setup-form').addEventListener('submit', async (event) => {
   if (!token) return;
   setSetupMessage('Connecting…');
   try {
-    await request('/api/session', { method: 'POST', body: JSON.stringify({ token }) });
+    await request(API.session, { method: 'POST', body: JSON.stringify({ token }) });
     $('api-token').value = '';
     showDashboard();
     setSetupMessage('Connected securely.');
     await refresh();
   } catch (error) { showLogin(error.status === 401 ? 'Invalid token. Use the API_TOKEN configured in Vercel and Render.' : (error.detail || 'Dashboard authentication is not configured.')); }
 });
-$('logout').onclick = async () => { try { await request('/api/session', { method: 'DELETE' }); } finally { showLogin('Dashboard locked.'); } };
-$('start').onclick = () => toggle('/api/tracking/start');
-$('stop').onclick = () => toggle('/api/tracking/stop');
+$('logout').onclick = async () => { try { await request(API.session, { method: 'DELETE' }); } finally { showLogin('Dashboard locked.'); } };
+$('start').onclick = () => toggle(API.trackingStart);
+$('stop').onclick = () => toggle(API.trackingStop);
 $('refresh').onclick = refresh;
-$('clear').onclick = async () => { if (confirm('Delete all stored location history? This cannot be undone.')) { try { await request('/api/location/history', { method: 'DELETE' }); await refresh(); } catch { alert('Could not clear history.'); } } };
+$('clear').onclick = async () => { if (confirm('Delete all stored location history? This cannot be undone.')) { try { await request(API.history, { method: 'DELETE' }); await refresh(); } catch { alert('Could not clear history.'); } } };
 setControls(false);
-request('/api/session').then(() => { showDashboard(); return refresh(); }).catch(() => showLogin());
+request(API.session).then(() => { showDashboard(); return refresh(); }).catch(() => showLogin());
 setInterval(refresh, 8000);

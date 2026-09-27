@@ -1,40 +1,24 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="app-build" content="tracking-fix-d67122f">
-  <title>Personal GPS Tracker</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <main>
-    <header>
-      <div><h1>Personal GPS Tracker</h1><p class="subtitle">Explicit-permission device tracking</p></div>
-      <span id="tracking" class="badge">LOCKED</span>
-    </header>
-    <section id="setup" class="card setup-card">
-      <h2>Secure dashboard access</h2>
-      <p>Enter the private dashboard token once. The token is checked by Vercel server-side and is never stored in browser storage or sent to the Render URL. This dashboard does not locate devices by phone number.</p>
-      <form id="setup-form" class="setup-form">
-        <label>Dashboard token<input id="api-token" type="password" placeholder="Enter your secure token" autocomplete="current-password" required></label>
-        <button type="submit">CONNECT SECURELY</button>
-      </form>
-      <p id="setup-message" class="message" role="status"></p>
-    </section>
-    <section class="grid">
-      <article class="card">
-        <h2>Current Location</h2>
-        <dl><dt>Latitude</dt><dd id="lat">--</dd><dt>Longitude</dt><dd id="lon">--</dd><dt>Accuracy</dt><dd id="accuracy">--</dd><dt>Last Update</dt><dd id="updated">--</dd><dt>Battery</dt><dd id="battery">--</dd><dt>Network</dt><dd id="network">--</dd></dl>
-        <p class="hint">An authorized Android device must be registered before tracking can start.</p><p id="action-message" class="message" role="status"></p><div class="controls"><button id="start">START TRACKING</button><button id="stop" class="danger">STOP TRACKING</button><button id="refresh">REFRESH LOCATION</button><button id="logout" class="secondary">LOCK DASHBOARD</button></div>
-      </article>
-      <article class="card map-card"><h2>Live Map</h2><div id="map" aria-label="Current location map"></div></article>
-    </section>
-    <section class="card"><h2>Location History</h2><button id="clear" class="danger">CLEAR HISTORY</button><table><thead><tr><th>Time</th><th>Latitude</th><th>Longitude</th><th>Accuracy</th><th>Battery</th></tr></thead><tbody id="history"></tbody></table></section>
-    <section class="card privacy"><h2>Privacy</h2><p>Location is collected only while tracking is enabled on the explicitly authorized device. You can stop tracking at any time. This system does not support phone-number tracking, SIM tracking, hidden surveillance, or locating another person.</p></section>
-  </main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="api-client.js"></script>
-  <script src="app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#183f37" />
+    <meta
+      name="description"
+      content="Waypoint — a more thoughtful way to get there. Open maps, personal routes, and privacy by design."
+    />
+    <title>Waypoint — Find your way, your way.</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&family=Manrope:wght@400;500;600;650;700;750;800&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

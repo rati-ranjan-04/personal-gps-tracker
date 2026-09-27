@@ -3,13 +3,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
-ARG VITE_MAP_STYLE_URL
-ARG VITE_RASTER_TILE_URL
-ARG VITE_ROUTER_URL
-ENV VITE_MAP_STYLE_URL=$VITE_MAP_STYLE_URL VITE_RASTER_TILE_URL=$VITE_RASTER_TILE_URL VITE_ROUTER_URL=$VITE_ROUTER_URL
 RUN npm run build
 
-FROM nginx:1.28-alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+FROM node:24-alpine
+ENV NODE_ENV=production PORT=3000
+WORKDIR /app
+COPY --chown=node:node --from=build /app/dist ./dist
+COPY --chown=node:node server ./server
+USER node
+EXPOSE 3000
+CMD ["node", "server/start.cjs"]

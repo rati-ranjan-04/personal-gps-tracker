@@ -1,66 +1,101 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  Briefcase,
+  GraduationCap,
+  Heart,
+  Users,
   ArrowDownUp,
   ArrowLeft,
   ArrowRight,
   ArrowUpRight,
   Bike,
   Bookmark,
-  BriefcaseBusiness,
   CarFront,
   Check,
-  CheckCheck,
-  ChevronDown,
   ChevronRight,
-  Coffee,
   Compass,
   Download,
   Footprints,
-  History,
   Home,
   Layers,
   Leaf,
   LocateFixed,
-  LockKeyhole,
   Map,
   MapPin,
-  Menu,
+  Maximize,
   Minus,
-  MoreHorizontal,
-  Mountain,
   Navigation,
   Navigation2,
-  ParkingCircle,
+  Pause,
+  Play,
   Plus,
+  RefreshCw,
   Route as RouteIcon,
   Search,
   Settings2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
-  TrainFront,
+  Square,
   Trash2,
   TrendingUp,
-  Utensils,
   Volume2,
   VolumeX,
   X,
-  Zap,
+  Clock3,
+  Pencil,
+  WifiOff,
+  Menu,
 } from "lucide-react";
-import MapView, { type MapHandle } from "./MapView";
+import type { MapHandle } from "./components/MapView";
+import PlaceSearch from "./components/PlaceSearch";
+import Dialog from "./components/Dialog";
+import type {
+  Coord,
+  Fix,
+  Mode,
+  Place,
+  Profile,
+  Region,
+  Route,
+  SavedPlace,
+  Settings,
+  Trip,
+} from "./lib/types";
+import { categories, defaults, savedCategories } from "./lib/types";
 import {
-  places,
-  origin as initialOrigin,
-  previewRoute,
-  readLocal,
-  isTrip,
+  formatDistance,
+  formatDuration,
+  insights,
+  isCoord,
+  isPlace,
   isRoute,
-  isCoordinate,
-  type Place,
-  type Route,
-  type Trip,
-} from "./data";
-
+  isTrip,
+  meters,
+  positionPlace,
+  remaining,
+  traceDistance,
+} from "./lib/domain";
+import {
+  clearLocal,
+  exportJSON,
+  read,
+  useStored,
+  write,
+} from "./lib/repository";
+import { nearby, request, route as calculate } from "./lib/api";
+import { clearRegions, deleteRegion, downloadRegion } from "./lib/offline";
+import { useLocation } from "./hooks/useLocation";
+import { useTracker } from "./hooks/useTracker";
+const MapView = lazy(() => import("./components/MapView"));
 const navItems = [
   { id: "explore", label: "Explore", icon: Compass },
   { id: "trips", label: "My trips", icon: RouteIcon },
@@ -68,1094 +103,2151 @@ const navItems = [
   { id: "offline", label: "Offline maps", icon: Download },
   { id: "insights", label: "Your insights", icon: TrendingUp },
 ];
-const categories = [
-  { name: "Restaurants", icon: Utensils },
-  { name: "Coffee", icon: Coffee },
-  { name: "Parks", icon: Leaf },
-  { name: "EV charging", icon: Zap },
-  { name: "Parking", icon: ParkingCircle },
-  { name: "Things to do", icon: Mountain },
-];
 const modes = [
-  { id: "drive", label: "Drive", icon: CarFront },
-  { id: "cycle", label: "Cycle", icon: Bike },
-  { id: "walk", label: "Walk", icon: Footprints },
-  { id: "transit", label: "Transit", icon: TrainFront },
+  { id: "drive" as Mode, label: "Drive", icon: CarFront },
+  { id: "cycle" as Mode, label: "Cycle", icon: Bike },
+  { id: "walk" as Mode, label: "Walk", icon: Footprints },
+  { id: "transit" as Mode, label: "Transit", icon: Navigation },
 ];
-const initialRoute: Route = {
-  coords: previewRoute,
-  distance: 3.8,
-  duration: 12,
-  source: "preview",
-  steps: [
-    "Head northeast on Market Street",
-    "Continue toward the Embarcadero",
-    "Arrive at the Ferry Building",
-  ],
-};
-const pictures = {
-  park: "https://images.unsplash.com/photo-1501594907352-04cda38ebc29?auto=format&fit=crop&w=600&q=85",
-  coffee:
-    "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=600&q=85",
-  city: "https://images.unsplash.com/photo-1449824913935-59a10b8d2000?auto=format&fit=crop&w=600&q=85",
-};
-function Logo({ small = false }: { small?: boolean }) {
+const empty: never[] = [];
+const savedValid = (value: unknown) =>
+  Array.isArray(value) &&
+  value.every(
+    (p) => isPlace(p) && typeof (p as SavedPlace).savedAt === "string",
+  );
+const settingsValid = (v: any) =>
+  v &&
+  ["light", "dark", "system"].includes(v.appearance) &&
+  ["Standard", "Dark", "Terrain"].includes(v.mapStyle) &&
+  ["km", "mi"].includes(v.units) &&
+  modes.some((m) => m.id === v.mode) &&
+  ["autoRecenter", "saveHistory", "voice"].every(
+    (k) => typeof v[k] === "boolean",
+  ) &&
+  v.preferences &&
+  typeof v.preferences.avoidTolls === "boolean" &&
+  typeof v.preferences.avoidHighways === "boolean" &&
+  typeof v.preferences.avoidHills === "boolean" &&
+  ["fastest", "shortest"].includes(v.preferences.strategy) &&
+  ["Road", "Hybrid", "City", "Mountain"].includes(v.preferences.bicycleType) &&
+  ["normal", "relaxed"].includes(v.preferences.walkingPace);
+function PlaceIcon({ category }: { category: string }) {
+  const Icon =
+    (
+      {
+        Home,
+        Work: Briefcase,
+        College: GraduationCap,
+        Family: Users,
+        Favorite: Heart,
+      } as Record<string, typeof Home>
+    )[category] || MapPin;
+  return <Icon size={18} />;
+}
+function Brand() {
   return (
-    <div className={`brand ${small ? "small" : ""}`}>
+    <div className="brand">
       <span className="brand-symbol">
-        <svg viewBox="0 0 34 34" fill="none">
+        <svg viewBox="0 0 34 34" aria-hidden="true">
           <path
             d="m5 25 9-19 5.5 12L30 11 19.5 30 14 18 5 25Z"
             fill="currentColor"
           />
         </svg>
       </span>
-      {!small && (
-        <span>
-          waypoint<span className="brand-dot">.</span>
-        </span>
-      )}
+      <span>
+        waypoint<span className="brand-dot">.</span>
+      </span>
     </div>
   );
 }
+function Empty({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: typeof Map;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="empty-state">
+      <Icon size={30} />
+      <h3>{title}</h3>
+      <p>{children}</p>
+    </div>
+  );
+}
+function Toggle({
+  title,
+  detail,
+  value,
+  onChange,
+}: {
+  title: string;
+  detail?: string;
+  value: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="setting-row">
+      <span>
+        <strong>{title}</strong>
+        {detail && <small>{detail}</small>}
+      </span>
+      <input
+        type="checkbox"
+        checked={value}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="switch" />
+    </label>
+  );
+}
 function App() {
-  const [page, setPage] = useState("explore");
-  const [mobileNav, setMobileNav] = useState(false);
-  const [destination, setDestination] = useState<Place>(places[0]);
-  const [origin, setOrigin] = useState<[number, number]>(initialOrigin);
-  const [originName, setOriginName] = useState("Your location");
-  const [query, setQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [mode, setMode] = useState("drive");
-  const [route, setRoute] = useState<Route>(initialRoute);
-  const [routeBusy, setRouteBusy] = useState(false);
-  const [category, setCategory] = useState("");
-  const [theme, setTheme] = useState("Standard");
-  const [layers, setLayers] = useState(false);
-  const [modal, setModal] = useState("");
-  const [toast, setToast] = useState("");
-  const [saved, setSaved] = useState<string[]>(() => {
-    const value = readLocal<unknown>("saved", ["home", "work", "coffee"]);
-    return Array.isArray(value)
-      ? value.filter(
-          (id): id is string =>
-            typeof id === "string" && places.some((p) => p.id === id),
-        )
-      : ["home", "work", "coffee"];
-  });
-  const [trips, setTrips] = useState<Trip[]>(() => {
-    const value = readLocal<unknown>("trips", []);
-    return Array.isArray(value) ? value.filter(isTrip).slice(0, 100) : [];
-  });
-  const [remember, setRemember] = useState(
-    () => readLocal<boolean>("remember", false) === true,
-  );
-  const [name, setName] = useState(() => {
-    const value = readLocal("name", "Alex");
-    return typeof value === "string" ? value.slice(0, 40) : "Alex";
-  });
-  const [voice, setVoice] = useState(false);
-  const [navigating, setNavigating] = useState(false);
-  const [step, setStep] = useState(0);
-  const [offlineRoutes, setOfflineRoutes] = useState<
-    { name: string; route: Route }[]
-  >(() => {
-    const value = readLocal<unknown>("offline", []);
-    return Array.isArray(value)
-      ? value
-          .filter((x) => typeof x?.name === "string" && isRoute(x.route))
-          .slice(0, 50)
-      : [];
-  });
-  const [stops, setStops] = useState<Place[]>([]);
-  const mapRef = useRef<MapHandle>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
-    undefined,
-  );
-  const requestRef = useRef<AbortController | null>(null);
+  const [page, setPage] = useState("explore"),
+    [modal, setModal] = useState(""),
+    [toast, setToast] = useState(""),
+    [more, setMore] = useState(false),
+    [sheet, setSheet] = useState(true);
+  const [settings, setSettings] = useStored<Settings>(
+      "settings",
+      defaults,
+      settingsValid,
+    ),
+    [profile, setProfile] = useStored<Profile>(
+      "profile",
+      { name: "", avatar: "leaf" },
+      (v: any) =>
+        v && typeof v.name === "string" && typeof v.avatar === "string",
+    ),
+    [saved, setSaved] = useStored<SavedPlace[]>("saved", [], savedValid),
+    [trips, setTrips] = useStored<Trip[]>(
+      "trips",
+      [],
+      (v) => Array.isArray(v) && v.every(isTrip),
+    ),
+    [recents, setRecents] = useStored<Place[]>(
+      "recents",
+      [],
+      (v) => Array.isArray(v) && v.every(isPlace),
+    ),
+    [regions, setRegions] = useStored<Region[]>(
+      "regions",
+      [],
+      (v: any) =>
+        Array.isArray(v) &&
+        v.every(
+          (r) =>
+            typeof r.id === "string" &&
+            isCoord(r.center) &&
+            Array.isArray(r.tiles) &&
+            Number.isFinite(r.bytes),
+        ),
+    ),
+    [directions, setDirections] = useStored<
+      { destination: Place; route: Route }[]
+    >(
+      "directions",
+      [],
+      (v: any) =>
+        Array.isArray(v) &&
+        v.every((x) => isPlace(x.destination) && isRoute(x.route)),
+    );
+  const [origin, setOrigin] = useState<Place | null>(null),
+    [destination, setDestination] = useState<Place | null>(null),
+    [mode, setMode] = useState<Mode>(settings.mode),
+    [stops, setStops] = useState<Place[]>([]),
+    [routes, setRoutes] = useState<Route[]>([]),
+    [selected, setSelected] = useState(0),
+    [routeStatus, setRouteStatus] = useState("idle"),
+    [routeError, setRouteError] = useState(""),
+    [routeRetry, setRouteRetry] = useState(0);
+  const [category, setCategory] = useState(""),
+    [discover, setDiscover] = useState<Place[]>([]),
+    [discoveryStatus, setDiscoveryStatus] = useState("idle"),
+    [discoveryError, setDiscoveryError] = useState(""),
+    [detail, setDetail] = useState<Place | null>(null),
+    [viewCenter, setViewCenter] = useState<Coord | undefined>(),
+    [layers, setLayers] = useState(false),
+    [theme, setTheme] = useState(settings.mapStyle),
+    [online, setOnline] = useState(navigator.onLine),
+    [offlineRegion, setOfflineRegion] = useState<Region | null>(null);
+  const [config, setConfig] = useState({
+      transit: false,
+      offlineTiles: false,
+      offlineAttribution: "© OpenStreetMap contributors",
+      version: "0.2.0",
+    }),
+    [configError, setConfigError] = useState("");
+  const [editing, setEditing] = useState<Place | null>(null),
+    [savedName, setSavedName] = useState(""),
+    [savedCategory, setSavedCategory] = useState("Favorite"),
+    [tripQuery, setTripQuery] = useState(""),
+    [tripMode, setTripMode] = useState("all"),
+    [tripDetail, setTripDetail] = useState<Trip | null>(null),
+    [replay, setReplay] = useState<Fix[]>([]),
+    [playing, setPlaying] = useState(false),
+    [replayIndex, setReplayIndex] = useState(0);
+  const [navigation, setNavigation] = useState(false),
+    [startingTrip, setStartingTrip] = useState(false),
+    [confirm, setConfirm] = useState<{
+      title: string;
+      body: string;
+      action: () => void | Promise<void>;
+    } | null>(null),
+    [regionName, setRegionName] = useState(""),
+    [downloadProgress, setDownloadProgress] = useState<number | null>(null),
+    [downloadError, setDownloadError] = useState(""),
+    [storageBytes, setStorageBytes] = useState<number | null>(null),
+    [profileName, setProfileName] = useState(profile.name),
+    [profileAvatar, setProfileAvatar] = useState(profile.avatar),
+    [recovered, setRecovered] = useState<any>(() =>
+      read(
+        "draft",
+        null,
+        (v: any) =>
+          v === null ||
+          (Array.isArray(v?.points) &&
+            v.points.length > 0 &&
+            v.points.every(
+              (p: any) =>
+                isCoord(p?.coords) &&
+                Number.isFinite(p.timestamp) &&
+                Number.isFinite(p.accuracy) &&
+                Number.isInteger(p.segment),
+            ) &&
+            Number.isFinite(Date.parse(v.startedAt)) &&
+            modes.some((m) => m.id === v.mode) &&
+            Number.isFinite(v.duration) &&
+            v.duration >= 0),
+      ),
+    );
+  const gps = useLocation(),
+    tracker = useTracker(),
+    map = useRef<MapHandle>(null),
+    mapContainer = useRef<HTMLElement>(null),
+    toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined),
+    downloadController = useRef<AbortController | null>(null),
+    lastVoice = useRef("");
   const notify = useCallback((message: string) => {
     setToast(message);
     clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(""), 4500);
+    toastTimer.current = setTimeout(() => setToast(""), 5000);
+  }, []);
+  const safe = (action: () => void) => {
+    try {
+      action();
+    } catch (e) {
+      notify((e as Error).message);
+    }
+  };
+  const go = (next: string) => {
+    setPage(next);
+    setMore(false);
+    setSheet(true);
+  };
+  const updateSettings = (next: Settings) => safe(() => setSettings(next));
+  useEffect(() => {
+    const listener = () => setOnline(navigator.onLine);
+    window.addEventListener("online", listener);
+    window.addEventListener("offline", listener);
+    return () => {
+      window.removeEventListener("online", listener);
+      window.removeEventListener("offline", listener);
+    };
+  }, []);
+  useEffect(() => {
+    const media = matchMedia("(prefers-color-scheme: dark)");
+    const update = () =>
+      (document.documentElement.dataset.appearance =
+        settings.appearance === "system"
+          ? media.matches
+            ? "dark"
+            : "light"
+          : settings.appearance);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [settings.appearance]);
+  useEffect(() => {
+    const controller = new AbortController();
+    request<typeof config>({ action: "config" }, controller.signal)
+      .then(setConfig)
+      .catch((e) => {
+        if (!controller.signal.aborted) setConfigError(e.message);
+      });
+    navigator.storage
+      ?.estimate()
+      .then((x) => setStorageBytes(x.usage ?? 0))
+      .catch(() => {});
+    return () => controller.abort();
   }, []);
   useEffect(
     () => () => {
       clearTimeout(toastTimer.current);
-      requestRef.current?.abort();
-      requestRef.current = null;
+      downloadController.current?.abort();
+      window.speechSynthesis?.cancel();
     },
     [],
   );
-  const store = (key: string, value: unknown) => {
-    try {
-      localStorage.setItem(`waypoint-${key}`, JSON.stringify(value));
-    } catch {
-      notify(
-        "Device storage is full or unavailable. Changes will last for this session.",
-      );
+  const rememberSearch = useCallback(
+    (place: Place) => {
+      try {
+        setRecents(
+          [place, ...recents.filter((p) => p.id !== place.id)].slice(0, 12),
+        );
+      } catch (e) {
+        notify((e as Error).message);
+      }
+    },
+    [recents, setRecents, notify],
+  );
+  const chooseDestination = useCallback(
+    (place: Place) => {
+      setDestination(place);
+      setDetail(null);
+      setPage("explore");
+      setSheet(true);
+      setReplay([]);
+      setPlaying(false);
+      setOfflineRegion(null);
+      setNavigation(false);
+      map.current?.locate(place.coords);
+      rememberSearch(place);
+    },
+    [rememberSearch],
+  );
+  const [discoveryRetry, setDiscoveryRetry] = useState(0);
+  const center = viewCenter || origin?.coords || gps.fix?.coords;
+  const locate = () => {
+    if (tracker.state === "recording") {
+      if (gps.fix) map.current?.locate(gps.fix.coords);
+      return;
     }
+    gps.start(false, (fix) => {
+      setOrigin(positionPlace(fix.coords));
+      setViewCenter(fix.coords);
+      map.current?.locate(fix.coords);
+      notify(`Location found · accuracy ±${Math.round(fix.accuracy)} m`);
+    });
   };
   useEffect(() => {
-    const listener = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "k") {
-        event.preventDefault();
-        setPage("explore");
-        inputRef.current?.focus();
-        setSearchOpen(true);
-      }
-      if (event.key === "Escape") {
-        setModal("");
-        setSearchOpen(false);
-        setLayers(false);
-        setMobileNav(false);
-      }
-    };
-    window.addEventListener("keydown", listener);
-    return () => window.removeEventListener("keydown", listener);
-  }, []);
-  const selectPlace = useCallback((place: Place) => {
-    requestRef.current?.abort();
-    requestRef.current = null;
-    setRouteBusy(false);
-    setDestination(place);
-    setQuery("");
-    setSearchOpen(false);
-    setNavigating(false);
-    setPage("explore");
-    setRoute({ ...initialRoute, coords: [], source: "preview" });
-    mapRef.current?.locate(place.coords);
-  }, []);
-  const categoryPlaces = category
-    ? places.filter((p) => p.category === category)
-    : [];
-  const filteredPlaces = places.filter((p) =>
-    `${p.name} ${p.address}`.toLowerCase().includes(query.toLowerCase()),
-  );
-  const savePlace = (place: Place) => {
-    const next = saved.includes(place.id)
-      ? saved.filter((id) => id !== place.id)
-      : [...saved, place.id];
-    setSaved(next);
-    store("saved", next);
-    notify(
-      next.includes(place.id)
-        ? `${place.name} added to your places`
-        : `${place.name} removed from saved places`,
-    );
-  };
-  const changeMode = (next: string) => {
-    requestRef.current?.abort();
-    requestRef.current = null;
-    setRouteBusy(false);
-    setMode(next);
-    setNavigating(false);
-    setRoute({ ...initialRoute, coords: [] });
-  };
-  async function planRoute() {
-    if (mode !== "drive") {
-      notify(
-        mode === "transit"
-          ? "Transit routing needs a local GTFS feed. Try driving for this preview."
-          : "Walking and cycling routing need a self-hosted routing profile. Driving is available in this preview.",
-      );
+    setRoutes([]);
+    setSelected(0);
+    setRouteError("");
+    if (!origin || !destination) {
+      setRouteStatus("idle");
       return;
     }
-    requestRef.current?.abort();
-    requestRef.current = null;
     const controller = new AbortController();
-    requestRef.current = controller;
-    setRouteBusy(true);
-    setNavigating(false);
-    const timeout = setTimeout(() => controller.abort(), 15000);
-    try {
-      const points = [origin, ...stops.map((p) => p.coords), destination.coords]
-        .map((c) => c.join(","))
-        .join(";");
-      const endpoint = (
-        import.meta.env.VITE_ROUTER_URL || "https://router.project-osrm.org"
-      ).replace(/\/$/, "");
-      const response = await fetch(
-        `${endpoint}/route/v1/driving/${points}?overview=full&geometries=geojson&steps=true`,
-        { signal: controller.signal },
-      );
-      if (!response.ok) throw new Error("Routing service unavailable");
-      const data = await response.json();
-      const found = data.routes?.[0];
-      if (
-        data.code !== "Ok" ||
-        !Array.isArray(found?.geometry?.coordinates) ||
-        found.geometry.coordinates.length < 2 ||
-        !found.geometry.coordinates.every(isCoordinate) ||
-        !Number.isFinite(found.distance) ||
-        !Number.isFinite(found.duration) ||
-        !Array.isArray(found.legs)
-      )
-        throw new Error("No drivable route found");
-      const steps = found.legs.flatMap(
-        (leg: {
-          steps: {
-            name: string;
-            distance: number;
-            maneuver: { type: string; modifier?: string };
-          }[];
-        }) =>
-          leg.steps.map((s) =>
-            s.maneuver.type === "arrive"
-              ? "Arrive at your destination"
-              : `${s.maneuver.type === "depart" ? "Head" : s.maneuver.modifier ? `Turn ${s.maneuver.modifier}` : "Continue"}${s.name ? ` on ${s.name}` : ""}${s.distance >= 100 ? ` for ${(s.distance / 1000).toFixed(1)} km` : ""}`,
+    setRouteStatus("loading");
+    const timer = setTimeout(
+      () =>
+        calculate(
+          [origin.coords, ...stops.map((s) => s.coords), destination.coords],
+          mode,
+          settings.preferences,
+          controller.signal,
+        )
+          .then((result) => {
+            if (controller.signal.aborted) return;
+            setRoutes(result);
+            setRouteStatus("ready");
+            map.current?.fit(result[0].coords);
+          })
+          .catch((e) => {
+            if (!controller.signal.aborted) {
+              setRouteStatus("error");
+              setRouteError(e.message);
+            }
+          }),
+      250,
+    );
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [origin, destination, mode, settings.preferences, stops, routeRetry]);
+  useEffect(() => {
+    if (!category || !center) return;
+    const controller = new AbortController();
+    setDiscoveryStatus("loading");
+    setDiscoveryError("");
+    setDiscover([]);
+    nearby(category, center, controller.signal)
+      .then((result) => {
+        if (controller.signal.aborted) return;
+        setDiscover(
+          result.sort(
+            (a, b) => meters(center, a.coords) - meters(center, b.coords),
           ),
-      );
-      if (requestRef.current !== controller || controller.signal.aborted)
-        return;
-      setRoute({
-        coords: found.geometry.coordinates,
-        distance: found.distance / 1000,
-        duration: Math.max(1, Math.round(found.duration / 60)),
-        source: "osrm",
-        steps: steps.length ? steps : ["Arrive at your destination"],
-      });
-      notify("Your route is ready. Have a good journey.");
-    } catch {
-      if (requestRef.current === controller) {
-        notify(
-          controller.signal.aborted
-            ? "Routing timed out. Please try again."
-            : "Could not calculate a route. Check your connection and try again.",
         );
+        setDiscoveryStatus("ready");
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted) {
+          setDiscoveryStatus("error");
+          setDiscoveryError(e.message);
+        }
+      });
+    return () => controller.abort();
+  }, [category, center?.[0], center?.[1], discoveryRetry]);
+  const activeRoute = routes[selected];
+  const navigationProgress = useMemo(
+    () =>
+      activeRoute && gps.fix ? remaining(activeRoute, gps.fix.coords) : null,
+    [activeRoute, gps.fix],
+  );
+  const currentStep = useMemo(() => {
+    if (!activeRoute) return null;
+    if (!gps.fix) return activeRoute.steps[0];
+    return activeRoute.steps.reduce(
+      (best, s) =>
+        meters(gps.fix!.coords, s.point) < meters(gps.fix!.coords, best.point)
+          ? s
+          : best,
+      activeRoute.steps[0],
+    );
+  }, [activeRoute, gps.fix]);
+  useEffect(() => {
+    if (!navigation || !gps.fix) return;
+    if (settings.autoRecenter) map.current?.locate(gps.fix.coords);
+    if (
+      settings.voice &&
+      currentStep?.text &&
+      lastVoice.current !== currentStep.text
+    ) {
+      lastVoice.current = currentStep.text;
+      if ("speechSynthesis" in window) {
+        speechSynthesis.cancel();
+        speechSynthesis.speak(new SpeechSynthesisUtterance(currentStep.text));
       }
-    } finally {
-      clearTimeout(timeout);
-      if (requestRef.current === controller) setRouteBusy(false);
     }
-  }
-  function locate() {
-    if (!navigator.geolocation) {
-      notify("Geolocation is not supported by this browser.");
+  }, [gps.fix, navigation, settings.autoRecenter, settings.voice, currentStep]);
+  useEffect(() => {
+    if (!playing || !replay.length) return;
+    const timer = setInterval(
+      () =>
+        setReplayIndex((i) => {
+          if (i >= replay.length - 1) {
+            setPlaying(false);
+            return i;
+          }
+          return i + 1;
+        }),
+      Math.max(50, Math.min(800, 10000 / replay.length)),
+    );
+    return () => clearInterval(timer);
+  }, [playing, replay]);
+  const tracked = tracker.state === "recording" || tracker.state === "paused";
+  const wasNavigating = useRef(false);
+  useEffect(() => {
+    if (wasNavigating.current && !navigation && !tracked) {
+      gps.stop();
+      window.speechSynthesis?.cancel();
+    }
+    wasNavigating.current = navigation;
+  }, [navigation, tracked, gps.stop]);
+  useEffect(() => {
+    if (tracker.state === "paused") gps.stop();
+  }, [tracker.state]);
+  function startTracking() {
+    if (tracked || startingTrip) return;
+    if (tracker.pending || recovered) {
+      setPage("trips");
+      setSheet(true);
+      notify(
+        "Save, export or discard your unfinished recording before starting another trip.",
+      );
       return;
     }
-    notify("Finding your location…");
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        requestRef.current?.abort();
-        requestRef.current = null;
-        setRouteBusy(false);
-        const coords: [number, number] = [
-          position.coords.longitude,
-          position.coords.latitude,
-        ];
-        setOrigin(coords);
-        setOriginName("Current GPS location");
-        setRoute({ ...initialRoute, coords: [] });
-        setNavigating(false);
-        mapRef.current?.locate(coords);
-        notify(
-          "Location updated. The map provider receives viewport requests; your GPS position is not saved.",
+    setStartingTrip(true);
+    gps.start(
+      false,
+      (first) => {
+        tracker.start(mode, destination);
+        tracker.sample(first);
+        setStartingTrip(false);
+        setOrigin(positionPlace(first.coords, "Trip start"));
+        map.current?.locate(first.coords);
+        gps.start(
+          true,
+          (fix) => tracker.sample(fix),
+          () => {
+            tracker.pause();
+            gps.stop();
+            notify(
+              "Recording paused because GPS is unavailable. Resume when you are ready.",
+            );
+          },
         );
       },
-      () =>
-        notify(
-          "Location access is unavailable. You can use the San Francisco preview location.",
-        ),
-      { enableHighAccuracy: true, timeout: 12000 },
+      () => setStartingTrip(false),
     );
   }
-  function startJourney() {
-    setNavigating(true);
-    setStep(0);
-    if (voice) speak(route.steps[0]);
-    if (remember) {
-      const trip: Trip = {
-        id: crypto.randomUUID(),
-        destination,
-        date: new Date().toISOString(),
-        distance: route.distance,
-        duration: route.duration,
-        mode,
-      };
-      const next = [trip, ...trips].slice(0, 100);
-      setTrips(next);
-      store("trips", next);
+  function saveCompleted(trip: Trip) {
+    try {
+      const identify = (place: Place) =>
+        saved.find((s) => meters(s.coords, place.coords) < 100) || place;
+      setTrips([
+        {
+          ...trip,
+          origin: identify(trip.origin),
+          destination: identify(trip.destination),
+        },
+        ...trips,
+      ]);
+      tracker.clear();
+      setRecovered(null);
+      notify("Your recorded trip is saved on this device.");
+    } catch (e) {
+      notify((e as Error).message);
     }
   }
-  function speak(text: string) {
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-    } else notify("Voice directions are not supported in this browser.");
-  }
-  function exportData() {
-    const blob = new Blob(
-      [
-        JSON.stringify(
-          {
-            profile: { name },
-            savedPlaces: places.filter((p) => saved.includes(p.id)),
-            trips,
-            offlineRoutes,
-          },
-          null,
-          2,
-        ),
-      ],
-      { type: "application/json" },
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "waypoint-my-data.json";
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    notify("Your data has been exported.");
-  }
-  function cacheRoute() {
-    if (!route.coords.length) {
-      notify("Plan a route first to save directions.");
+  function endTrip() {
+    gps.stop();
+    setNavigation(false);
+    window.speechSynthesis?.cancel();
+    const trip = tracker.finish();
+    if (!trip) {
+      tracker.clear();
+      notify("No usable GPS points were recorded. No trip was saved.");
       return;
     }
-    const next = [
-      { name: destination.name, route },
-      ...offlineRoutes.filter((r) => r.name !== destination.name),
-    ].slice(0, 50);
-    setOfflineRoutes(next);
-    store("offline", next);
-    notify(
-      "Route directions saved on this device. Map tiles still require internet.",
-    );
+    if (settings.saveHistory) saveCompleted(trip);
+    else
+      notify(
+        "Trip ended. History is off; export or discard the recording below.",
+      );
   }
-  const topPlace = trips.length
-    ? [...trips].sort(
-        (a, b) =>
-          trips.filter((t) => t.destination.id === b.destination.id).length -
-          trips.filter((t) => t.destination.id === a.destination.id).length,
-      )[0].destination
-    : places[1];
-  const isPreview = route.source === "preview";
-  const activeTitle = navItems.find((n) => n.id === page)?.label || "Explore";
+  function startNavigation() {
+    if (!activeRoute) return;
+    if (tracker.state === "paused") {
+      notify("Resume your trip before starting live navigation.");
+      return;
+    }
+    setNavigation(true);
+    setSheet(false);
+    lastVoice.current = "";
+    if (tracked) return;
+    gps.start(true);
+  }
+  function exitNavigation() {
+    setNavigation(false);
+    setSheet(true);
+    if (!tracked) gps.stop();
+    window.speechSynthesis?.cancel();
+  }
+  function editPlace(place: Place) {
+    setEditing(place);
+    setSavedName(place.name);
+    setSavedCategory(
+      savedCategories.includes(place.category) ? place.category : "Favorite",
+    );
+    setModal("save");
+  }
+  function commitPlace() {
+    if (!editing || !savedName.trim()) return;
+    safe(() => {
+      const item: SavedPlace = {
+        ...editing,
+        name: savedName.trim(),
+        category: savedCategory,
+        savedAt: new Date().toISOString(),
+      };
+      let next = saved.filter((p) => p.id !== item.id);
+      if (["Home", "Work"].includes(item.category))
+        next = next.map((p) =>
+          p.category === item.category ? { ...p, category: "Favorite" } : p,
+        );
+      setSaved([...next, item]);
+      setModal("");
+      notify("Place saved. Your next visit is one tap away.");
+    });
+  }
+  function replayTrip(trip: Trip) {
+    setTripDetail(trip);
+    setReplay(trip.points);
+    setReplayIndex(trip.points.length - 1);
+    setPlaying(false);
+    setPage("trips");
+    setSheet(true);
+    setModal("");
+    map.current?.fit(trip.points.map((p) => p.coords));
+  }
+  async function download() {
+    if (!config.offlineTiles) {
+      setDownloadError(
+        "The operator must configure a tile source that permits offline downloads. Public map tiles are not bulk-downloaded.",
+      );
+      return;
+    }
+    const c = map.current?.center();
+    if (!c) return;
+    const controller = new AbortController();
+    downloadController.current = controller;
+    setDownloadProgress(0);
+    setDownloadError("");
+    try {
+      const region = await downloadRegion(
+        regionName.trim() || "My offline area",
+        c,
+        config.offlineAttribution,
+        setDownloadProgress,
+        controller.signal,
+      );
+      try {
+        setRegions([...regions, region]);
+      } catch (e) {
+        await deleteRegion(region);
+        throw e;
+      }
+      notify("Area downloaded for offline map viewing.");
+    } catch (e) {
+      setDownloadError((e as Error).message);
+    } finally {
+      setDownloadProgress(null);
+      downloadController.current = null;
+    }
+  }
+  function exportAll() {
+    exportJSON({
+      version: 2,
+      profile,
+      settings,
+      savedPlaces: saved,
+      trips,
+      recents,
+      regions,
+      savedDirections: directions,
+      pendingRecording: tracker.pending || recovered,
+    });
+    notify("Your local data was exported.");
+  }
+  const ask = (
+    title: string,
+    body: string,
+    action: () => void | Promise<void>,
+  ) => setConfirm({ title, body, action });
+  const stats = useMemo(() => insights(trips), [trips]);
+  const filteredTrips = useMemo(
+    () =>
+      trips.filter(
+        (t) =>
+          (tripMode === "all" || t.mode === tripMode) &&
+          `${t.destination.name} ${t.origin.name}`
+            .toLowerCase()
+            .includes(tripQuery.toLowerCase()),
+      ),
+    [trips, tripQuery, tripMode],
+  );
+  const displayedPlaces = useMemo(
+    () => (detail ? [detail] : category ? discover : empty),
+    [detail, category, discover],
+  );
+  const displayedTrace = useMemo(
+    () => (replay.length ? replay.slice(0, replayIndex + 1) : tracker.points),
+    [replay, replayIndex, tracker.points],
+  );
+  const selectedRoutes = useMemo(
+    () => (replay.length ? empty : routes),
+    [replay.length, routes],
+  );
+  const onMapPlace = useCallback((place: Place) => {
+    setDetail(place);
+    setSheet(true);
+    setPage("explore");
+  }, []);
+  const title =
+    page === "settings"
+      ? "Settings & preferences"
+      : page === "privacy"
+        ? "Privacy Center"
+        : navItems.find((i) => i.id === page)?.label || "Explore";
+  const distance = (n: number) => formatDistance(n, settings.units);
+  const searchProps = {
+    center,
+    recents,
+    onClear: () => safe(() => setRecents([])),
+  };
+  const formRouteOptions = (
+    <>
+      <p className="body-copy">
+        These options are supported by Valhalla. Road preferences influence
+        route selection; a route may still use an avoided road when no practical
+        alternative exists.
+      </p>
+      {mode === "drive" && (
+        <>
+          <Toggle
+            title="Avoid tolls"
+            value={settings.preferences.avoidTolls}
+            onChange={(v) =>
+              updateSettings({
+                ...settings,
+                preferences: { ...settings.preferences, avoidTolls: v },
+              })
+            }
+          />
+          <Toggle
+            title="Avoid highways"
+            value={settings.preferences.avoidHighways}
+            onChange={(v) =>
+              updateSettings({
+                ...settings,
+                preferences: { ...settings.preferences, avoidHighways: v },
+              })
+            }
+          />
+          <label className="form-label">
+            Route priority
+            <select
+              value={settings.preferences.strategy}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  preferences: {
+                    ...settings.preferences,
+                    strategy: e.target.value as "fastest" | "shortest",
+                  },
+                })
+              }
+            >
+              <option value="fastest">Prefer faster route</option>
+              <option value="shortest">Prefer shorter route</option>
+            </select>
+          </label>
+        </>
+      )}
+      {mode === "cycle" && (
+        <>
+          <label className="form-label">
+            Bicycle type
+            <select
+              value={settings.preferences.bicycleType}
+              onChange={(e) =>
+                updateSettings({
+                  ...settings,
+                  preferences: {
+                    ...settings.preferences,
+                    bicycleType: e.target.value,
+                  },
+                })
+              }
+            >
+              {["Hybrid", "Road", "City", "Mountain"].map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+          </label>
+          <Toggle
+            title="Prefer fewer hills"
+            value={settings.preferences.avoidHills}
+            onChange={(v) =>
+              updateSettings({
+                ...settings,
+                preferences: { ...settings.preferences, avoidHills: v },
+              })
+            }
+          />
+        </>
+      )}
+      {mode === "walk" && (
+        <label className="form-label">
+          Walking pace
+          <select
+            value={settings.preferences.walkingPace}
+            onChange={(e) =>
+              updateSettings({
+                ...settings,
+                preferences: {
+                  ...settings.preferences,
+                  walkingPace: e.target.value as "normal" | "relaxed",
+                },
+              })
+            }
+          >
+            <option value="normal">Normal · 5.1 km/h</option>
+            <option value="relaxed">Relaxed · 3.5 km/h</option>
+          </select>
+        </label>
+      )}
+      {mode === "transit" && (
+        <p className="body-copy">
+          Transit routes use the current departure time.{" "}
+          {config.transit
+            ? "Available routes depend on the configured local schedules."
+            : "No transit timetable service is configured for this deployment."}
+        </p>
+      )}
+    </>
+  );
   return (
-    <div className="app-shell">
-      <aside className={`sidebar ${mobileNav ? "mobile-open" : ""}`}>
-        <a
+    <div
+      className={`app-shell waypoint-v2 ${navigation ? "navigation-active" : ""}`}
+    >
+      <aside className="sidebar">
+        <button
           className="logo-link"
-          href="#"
+          onClick={() => go("explore")}
           aria-label="Waypoint home"
-          onClick={(e) => {
-            e.preventDefault();
-            setPage("explore");
-          }}
         >
-          <Logo />
-        </a>
+          <Brand />
+        </button>
         <div className="workspace-label">YOUR EVERYDAY, REIMAGINED</div>
         <nav aria-label="Main navigation">
           {navItems.map((item) => (
             <button
               key={item.id}
               className={`nav-item ${page === item.id ? "active" : ""}`}
-              onClick={() => {
-                setPage(item.id);
-                setMobileNav(false);
-              }}
+              aria-current={page === item.id ? "page" : undefined}
+              onClick={() => go(item.id)}
             >
               <item.icon size={19} />
               <span>{item.label}</span>
-              {item.id === "insights" ? (
-                <span className="ai-tag">AI</span>
-              ) : item.id === "saved" ? (
+              {item.id === "saved" && (
                 <span className="nav-count">{saved.length}</span>
-              ) : null}
+              )}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="privacy-card">
-            <div className="privacy-icon">
-              <ShieldCheck size={19} />
-              <span className="tiny-dot" />
-            </div>
-            <h3>Your world. Your data.</h3>
-            <p>
-              A little more peace of mind,
-              <br />
-              wherever life takes you.
-            </p>
-            <button onClick={() => setModal("privacy")}>
-              Privacy at Waypoint <ArrowUpRight size={14} />
+            <ShieldCheck size={21} />
+            <h3>Your world. Your choices.</h3>
+            <p>Understand what stays on your device and what’s shared.</p>
+            <button onClick={() => go("privacy")}>
+              Open Privacy Center <ArrowUpRight size={14} />
             </button>
           </div>
           <button
-            className="nav-item settings"
-            onClick={() => setModal("settings")}
+            className={`nav-item settings ${page === "settings" ? "active" : ""}`}
+            onClick={() => go("settings")}
           >
-            <Settings2 size={19} />
+            <Settings2 size={18} />
             <span>Settings & preferences</span>
           </button>
-          <button className="profile" onClick={() => setModal("profile")}>
-            <span className="avatar">{name.charAt(0).toUpperCase()}</span>
-            <span>
-              <strong>{name || "Traveler"} Morgan</strong>
-              <small>Personal workspace</small>
+          <button
+            className="profile"
+            onClick={() => {
+              setProfileName(profile.name);
+              setProfileAvatar(profile.avatar);
+              setModal("profile");
+            }}
+          >
+            <span className="avatar">
+              {profile.avatar === "leaf" ? (
+                <Leaf size={19} />
+              ) : profile.avatar === "compass" ? (
+                <Compass size={19} />
+              ) : (
+                profile.name.charAt(0).toUpperCase() || "W"
+              )}
             </span>
-            <ChevronDown size={15} />
+            <span>
+              <strong>{profile.name || "Your Waypoint"}</strong>
+              <small>Local profile · this device</small>
+            </span>
+            <ChevronRight size={15} />
           </button>
         </div>
         <div className="sidebar-footer">
-          <span className="tiny-dot" /> Made for the way you move
+          <span className="tiny-dot" /> Find your way, your way.
         </div>
       </aside>
-      {mobileNav && (
-        <button
-          className="nav-scrim"
-          aria-label="Close navigation"
-          onClick={() => setMobileNav(false)}
-        />
-      )}
       <div className="main-shell">
         <header className="topbar">
           <div className="page-heading">
-            <button
-              className="icon-button mobile-menu"
-              aria-label="Open navigation"
-              onClick={() => setMobileNav(true)}
-            >
-              <Menu size={22} />
-            </button>
             <div>
-              <h1>{page === "explore" ? "Explore the world" : activeTitle}</h1>
-              <p>
-                {page === "explore"
-                  ? "Find your way. Make it yours."
-                  : "A little more clarity for every journey."}
-              </p>
+              <h1>{page === "explore" ? "Explore your world" : title}</h1>
+              <p>Find your way. Make it yours.</p>
             </div>
           </div>
           <div className="topbar-right">
-            <span className="city-label">
-              <MapPin size={15} /> San Francisco, CA <ChevronDown size={12} />
-            </span>
-            <span className="header-divider" />
+            {!online && (
+              <span className="offline-badge">
+                <WifiOff size={14} /> Offline
+              </span>
+            )}
             <button
               className="private-badge"
-              onClick={() => setModal("privacy")}
+              onClick={() => go("privacy")}
+              aria-label="Open Privacy Center"
             >
-              <ShieldCheck size={14} />
-              <span>Privacy first</span>
+              <ShieldCheck size={15} /> Privacy first
             </button>
             <button
               className="header-avatar"
               aria-label="Open profile"
-              onClick={() => setModal("profile")}
+              onClick={() => {
+                setProfileName(profile.name);
+                setProfileAvatar(profile.avatar);
+                setModal("profile");
+              }}
             >
-              {name.charAt(0).toUpperCase()}
+              {profile.name.charAt(0).toUpperCase() || <Leaf size={17} />}
             </button>
           </div>
         </header>
         <main className="workspace">
-          <section className="planning-panel">
-            {page === "explore" ? (
+          <section
+            className={`planning-panel ${sheet ? "sheet-open" : "sheet-collapsed"} ${page !== "explore" ? "content-sheet" : ""}`}
+            aria-label={title}
+          >
+            <button
+              className="sheet-toggle"
+              aria-label={sheet ? "Collapse panel" : "Expand panel"}
+              onClick={() => setSheet(!sheet)}
+            >
+              <span />
+            </button>
+            {page === "explore" && (
               <>
                 <div className="planner-heading">
                   <span className="eyebrow">
                     <span className="tiny-dot" /> A BETTER WAY TO GET THERE
                   </span>
-                  <h2>Where to, {name || "traveler"}?</h2>
+                  <h2>
+                    {profile.name
+                      ? `Where to, ${profile.name}?`
+                      : "Where to next?"}
+                  </h2>
                   <p>Every great day starts with a direction.</p>
                 </div>
+                <PlaceSearch {...searchProps} onSelect={chooseDestination} />
                 <div className="route-planner">
                   <div className="travel-modes" aria-label="Travel mode">
                     {modes.map((m) => (
                       <button
                         key={m.id}
+                        aria-pressed={mode === m.id}
                         className={mode === m.id ? "selected" : ""}
-                        onClick={() => changeMode(m.id)}
+                        onClick={() => {
+                          setMode(m.id);
+                          setNavigation(false);
+                        }}
                       >
                         <m.icon size={19} />
                         <span>{m.label}</span>
                       </button>
                     ))}
                   </div>
-                  <div className="route-fields">
-                    <div className="route-dots">
+                  <div className="route-fields-v2">
+                    <button onClick={() => setModal("origin")}>
                       <span className="start-dot" />
-                      <span className="dotted-line" />
-                      <MapPin size={16} />
-                    </div>
-                    <div className="field-stack">
-                      <button
-                        className="origin-field"
-                        onClick={() => setModal("origin")}
-                      >
-                        <span>{originName}</span>
-                        <LocateFixed size={15} />
-                      </button>
-                      <div className="destination-field">
-                        <input
-                          ref={inputRef}
-                          aria-label="Search a destination"
-                          value={searchOpen ? query : destination.name}
-                          placeholder="Where do you want to go?"
-                          onFocus={() => {
-                            setSearchOpen(true);
-                            setQuery("");
-                          }}
-                          onChange={(e) => {
-                            setQuery(e.target.value);
-                            setSearchOpen(true);
-                          }}
-                        />
-                        <button
-                          aria-label="Search destinations"
-                          onClick={() => {
-                            setSearchOpen(!searchOpen);
-                            inputRef.current?.focus();
-                          }}
-                        >
-                          <Search size={17} />
-                        </button>
-                      </div>
-                    </div>
-                    <button
-                      className="swap-button"
-                      aria-label="Swap origin and destination"
-                      onClick={() => {
-                        requestRef.current?.abort();
-                        requestRef.current = null;
-                        setRouteBusy(false);
-                        setDestination({
-                          id: "custom",
-                          name: originName,
-                          address: "Previous starting point",
-                          coords: origin,
-                          category: "Personal",
-                          minutes: 12,
-                        });
-                        setOrigin(destination.coords);
-                        setOriginName(destination.name);
-                        setRoute({ ...initialRoute, coords: [] });
-                        setNavigating(false);
-                      }}
-                    >
-                      <ArrowDownUp size={16} />
+                      <span>{origin?.name || "Choose a starting point"}</span>
+                      <Search size={15} />
                     </button>
-                  </div>
-                  {searchOpen && (
-                    <div className="search-results">
-                      <div className="search-label">
-                        {query ? "MATCHING PLACES" : "EXPLORE SAN FRANCISCO"}
+                    <div>
+                      <MapPin size={16} />
+                      <span>
+                        {destination?.name || "Search for your destination"}
+                      </span>
+                      {origin && destination && (
                         <button
-                          aria-label="Close search"
-                          onClick={() => setSearchOpen(false)}
+                          aria-label="Swap origin and destination"
+                          onClick={() => {
+                            const previous = origin;
+                            setOrigin(destination);
+                            setDestination(previous);
+                          }}
                         >
-                          <X size={13} />
+                          <ArrowDownUp size={16} />
                         </button>
-                      </div>
-                      {filteredPlaces.length ? (
-                        filteredPlaces.slice(0, 6).map((p) => (
-                          <button key={p.id} onClick={() => selectPlace(p)}>
-                            <span className="search-pin">
-                              <MapPin size={16} />
-                            </span>
-                            <span>
-                              <strong>{p.name}</strong>
-                              <small>{p.address}</small>
-                            </span>
-                            <ArrowUpRight size={15} />
-                          </button>
-                        ))
-                      ) : (
-                        <div className="empty-search">
-                          No places found. Try “park”, “coffee”, or a San
-                          Francisco landmark.
-                        </div>
                       )}
                     </div>
-                  )}
-                  {stops.map((stop, index) => (
-                    <div className="stop-row" key={stop.id}>
-                      <span>{index + 1}</span>
-                      {stop.name}
+                  </div>
+                  {stops.map((s, i) => (
+                    <div className="stop-row" key={s.id}>
+                      <span>{i + 1}</span>
+                      {s.name}
                       <button
-                        aria-label={`Remove ${stop.name}`}
-                        onClick={() => {
-                          requestRef.current?.abort();
-                          requestRef.current = null;
-                          setRouteBusy(false);
-                          setStops(stops.filter((s) => s.id !== stop.id));
-                          setRoute({ ...initialRoute, coords: [] });
-                          setNavigating(false);
-                        }}
+                        aria-label={`Remove ${s.name}`}
+                        onClick={() =>
+                          setStops(stops.filter((x) => x.id !== s.id))
+                        }
                       >
-                        <X size={13} />
+                        <X size={17} />
                       </button>
                     </div>
                   ))}
                   <div className="route-options">
-                    <button onClick={() => setModal("stops")}>
-                      <Plus size={14} /> Add a stop
+                    <button
+                      disabled={stops.length >= 3}
+                      onClick={() => setModal("stop")}
+                    >
+                      <Plus size={16} /> Add a stop
                     </button>
-                    <button onClick={() => setModal("preferences")}>
-                      <SlidersHorizontal size={14} /> Route options
+                    <button onClick={() => setModal("options")}>
+                      <SlidersHorizontal size={16} /> Route options
                     </button>
                   </div>
-                  <button
-                    className="primary-button find-route"
-                    onClick={planRoute}
-                    disabled={routeBusy}
-                  >
-                    <RouteIcon size={17} />
-                    {routeBusy ? "Finding your way…" : "Find my route"}
-                    <ArrowRight size={17} />
-                  </button>
-                  <p className="routing-disclosure">
-                    OpenStreetMap routes ·{" "}
-                    {originName === "Your location"
-                      ? "Sample start location"
-                      : "Selected start location"}
-                  </p>
+                  {!origin && (
+                    <button
+                      className="primary-button full"
+                      onClick={locate}
+                      disabled={gps.status === "loading"}
+                    >
+                      <LocateFixed size={17} />
+                      {gps.status === "loading"
+                        ? "Finding your location…"
+                        : "Use my current location"}
+                    </button>
+                  )}
+                  {origin && !destination && (
+                    <p className="body-copy compact">
+                      Search anywhere to plan your next journey.
+                    </p>
+                  )}
+                  {gps.error && (
+                    <div className="inline-error" role="alert">
+                      {gps.error}
+                      <button onClick={locate}>Try location again</button>
+                    </div>
+                  )}
+                  {gps.fix && (
+                    <p className="location-status">
+                      <span className="tiny-dot" /> Location accuracy ±
+                      {Math.round(gps.fix.accuracy)} m
+                    </p>
+                  )}
+                  {routeStatus === "loading" && (
+                    <div className="skeleton-route" role="status">
+                      <span className="spinner" /> Finding your{" "}
+                      {mode === "drive"
+                        ? "driving"
+                        : mode === "cycle"
+                          ? "cycling"
+                          : mode === "walk"
+                            ? "walking"
+                            : "transit"}{" "}
+                      route…
+                    </div>
+                  )}
+                  {routeError && (
+                    <div className="inline-error" role="alert">
+                      {routeError}
+                      <button onClick={() => setRouteRetry((n) => n + 1)}>
+                        Retry routing
+                      </button>
+                    </div>
+                  )}
+                  {routes.length > 0 && (
+                    <div className="route-alternatives">
+                      {routes.map((r, i) => (
+                        <button
+                          key={r.id}
+                          className={selected === i ? "selected" : ""}
+                          aria-pressed={selected === i}
+                          onClick={() => {
+                            setSelected(i);
+                            map.current?.fit(r.coords);
+                          }}
+                        >
+                          <span>
+                            <strong>{formatDuration(r.duration)}</strong>
+                            <small>{r.label}</small>
+                          </span>
+                          <span>
+                            {distance(r.distance)}
+                            {selected === i && <Check size={16} />}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <section className="suggested-section">
-                  <div className="section-title">
-                    <h3>
-                      <Sparkles size={16} /> A little ahead of you
-                    </h3>
-                    <span className="soft-tag">FOR YOU</span>
-                  </div>
+                {activeRoute && !tracked && (
                   <button
-                    className="prediction-card"
-                    onClick={() => selectPlace(topPlace)}
+                    className="outline-button full"
+                    disabled={startingTrip}
+                    onClick={startTracking}
                   >
-                    <span className="prediction-icon">
-                      <Home size={20} />
-                    </span>
-                    <span className="prediction-content">
-                      <strong>
-                        {trips.length
-                          ? "Your familiar favorite"
-                          : "Home sounds good about now"}
-                      </strong>
-                      <small>
-                        {trips.length
-                          ? `You’ve planned ${trips.filter((t) => t.destination.id === topPlace.id).length} trips here`
-                          : "Your next chapter is a short ride away."}
-                      </small>
-                      <span>
-                        <span className="tiny-dot" />
-                        {topPlace.minutes} min away{" "}
-                        <span className="prediction-divider">·</span>
-                        {trips.length
-                          ? "From your trip history"
-                          : "Sample suggestion"}
-                      </span>
-                    </span>
-                    <ChevronRight size={17} />
+                    <Play size={18} />{" "}
+                    {startingTrip
+                      ? "Waiting for location…"
+                      : "Start trip recording"}
                   </button>
-                </section>
+                )}
+                {detail && (
+                  <article className="place-detail-card">
+                    <button
+                      className="close-detail icon-button"
+                      aria-label="Close place details"
+                      onClick={() => setDetail(null)}
+                    >
+                      <X size={17} />
+                    </button>
+                    <span className="eyebrow">{detail.category}</span>
+                    <h3>{detail.name}</h3>
+                    <p>{detail.address}</p>
+                    {center && (
+                      <small>
+                        {distance(meters(center, detail.coords))} away ·
+                        straight-line distance
+                      </small>
+                    )}
+                    <div className="button-row">
+                      <button
+                        className="primary-button"
+                        onClick={() => chooseDestination(detail)}
+                      >
+                        <Navigation size={16} /> Navigate
+                      </button>
+                      <button
+                        className="outline-button"
+                        onClick={() => editPlace(detail)}
+                      >
+                        <Bookmark size={16} /> Save
+                      </button>
+                    </div>
+                  </article>
+                )}
                 <section className="quick-section">
                   <div className="section-title">
                     <h3>Your go-to places</h3>
-                    <button onClick={() => setPage("saved")}>
-                      View all <ArrowUpRight size={13} />
+                    <button onClick={() => go("saved")}>
+                      View all <ArrowUpRight size={14} />
                     </button>
                   </div>
-                  <div className="quick-places">
-                    {[places[1], places[2], places[4]].map((p, i) => {
-                      const Icon = [Home, BriefcaseBusiness, Coffee][i];
-                      return (
-                        <button key={p.id} onClick={() => selectPlace(p)}>
-                          <span className={`quick-icon q-${i}`}>
-                            <Icon size={19} />
+                  {saved.length ? (
+                    <div className="quick-places">
+                      {saved.slice(0, 3).map((p) => (
+                        <button key={p.id} onClick={() => chooseDestination(p)}>
+                          <span className="quick-icon">
+                            <PlaceIcon category={p.category} />
                           </span>
-                          <strong>{i === 2 ? "Coffee spot" : p.name}</strong>
-                          <small>{p.minutes} min away</small>
+                          <strong>{p.name}</strong>
+                          <small>{p.category}</small>
                         </button>
-                      );
-                    })}
-                  </div>
-                </section>
-                <section className="discover-section">
-                  <div className="section-title">
-                    <h3>Around the corner</h3>
-                    <span className="muted-label">A little inspiration</span>
-                  </div>
-                  <button
-                    className="discovery-card"
-                    onClick={() => selectPlace(places[7])}
-                  >
-                    <img
-                      src={pictures.park}
-                      alt="Golden Gate Bridge seen from the San Francisco waterfront"
-                    />
-                    <span className="discovery-shade" />
-                    <span className="discovery-label">
-                      <span>TAKE THE SCENIC ROUTE</span>
-                      <strong>A fresh perspective awaits.</strong>
-                      <small>
-                        Discover something close to home{" "}
-                        <ArrowUpRight size={14} />
-                      </small>
-                    </span>
-                    <span className="discovery-badge">
-                      <Compass size={15} />
-                    </span>
-                  </button>
-                </section>
-                <div className="panel-footnote">
-                  <LockKeyhole size={12} />
-                  <span>
-                    Your journeys are personal. Let’s keep them that way.
-                  </span>
-                </div>
-              </>
-            ) : (
-              <>
-                <button
-                  className="back-link"
-                  onClick={() => setPage("explore")}
-                >
-                  <ArrowLeft size={14} /> Back to exploring
-                </button>
-                <div className="planner-heading alternate-heading">
-                  <span className="eyebrow">YOUR WORLD, IN ONE PLACE</span>
-                  <h2>{activeTitle}</h2>
-                  <p>
-                    {page === "saved"
-                      ? "The places that feel a little more like you."
-                      : page === "trips"
-                        ? "Every journey has a story."
-                        : page === "offline"
-                          ? "Keep your directions close, wherever you go."
-                          : "Make a little more of your everyday."}
-                  </p>
-                </div>
-                {page === "saved" && (
-                  <>
-                    <div className="section-title">
-                      <h3>{saved.length} saved places</h3>
-                      <button onClick={() => setModal("save-place")}>
-                        <Plus size={14} /> Add new
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="soft-empty">
+                      <Bookmark size={20} />
+                      <p>Save places you visit often for one-tap directions.</p>
+                      <button
+                        className="text-button"
+                        onClick={() => setModal("add-place")}
+                      >
+                        Save your first place <Plus size={14} />
                       </button>
                     </div>
-                    <div className="place-list">
-                      {places
-                        .filter((p) => saved.includes(p.id))
-                        .map((p) => (
-                          <article key={p.id}>
-                            <button
-                              className="place-detail"
-                              onClick={() => selectPlace(p)}
-                            >
-                              <span className="list-icon">
-                                <MapPin size={18} />
-                              </span>
-                              <span>
-                                <strong>{p.name}</strong>
-                                <small>{p.address}</small>
-                              </span>
-                            </button>
-                            <button
-                              className="icon-button"
-                              aria-label={`Unsave ${p.name}`}
-                              onClick={() => savePlace(p)}
-                            >
-                              <Bookmark size={17} fill="currentColor" />
-                            </button>
-                          </article>
-                        ))}
-                    </div>
-                    {saved.length === 0 && (
-                      <div className="empty-state">
-                        <Bookmark />
-                        <h3>Make yourself at home</h3>
-                        <p>Save a place to find it here next time.</p>
-                      </div>
-                    )}
+                  )}
+                </section>
+                <section className="suggested-section">
+                  <div className="section-title">
+                    <h3>
+                      <Compass size={17} /> Around you
+                    </h3>
                     <button
-                      className="primary-button full"
-                      onClick={() => setModal("save-place")}
+                      onClick={() => {
+                        const c = map.current?.center();
+                        setViewCenter(c);
+                        setDiscoveryRetry((n) => n + 1);
+                      }}
                     >
-                      <Plus size={17} /> Save a place
+                      Use map center
                     </button>
-                  </>
-                )}
-                {page === "trips" && (
-                  <>
-                    <div className="info-banner">
-                      <ShieldCheck size={19} />
+                  </div>
+                  {!center ? (
+                    <div className="soft-empty">
                       <p>
-                        Trip history is{" "}
-                        {remember ? "enabled on this device" : "off by default"}
-                        .
-                        <button onClick={() => setModal("privacy")}>
-                          Manage privacy settings <ArrowUpRight size={12} />
-                        </button>
+                        Use your location or choose a map area to discover
+                        nearby places.
                       </p>
                     </div>
-                    {trips.length ? (
-                      <div className="trip-list">
-                        {trips.map((t) => (
+                  ) : (
+                    <>
+                      <div className="nearby-categories">
+                        {categories.map((c) => (
                           <button
-                            key={t.id}
-                            onClick={() => selectPlace(t.destination)}
+                            aria-pressed={category === c}
+                            className={category === c ? "selected" : ""}
+                            key={c}
+                            onClick={() => {
+                              setCategory(category === c ? "" : c);
+                              setDetail(null);
+                            }}
                           >
-                            <span className="list-icon">
-                              <RouteIcon size={19} />
-                            </span>
-                            <span>
-                              <strong>{t.destination.name}</strong>
-                              <small>
-                                {new Date(t.date).toLocaleDateString("en-US", {
-                                  month: "short",
-                                  day: "numeric",
-                                })}{" "}
-                                · {t.distance.toFixed(1)} km · {t.duration} min
-                              </small>
-                            </span>
-                            <ChevronRight size={16} />
+                            {c}
                           </button>
                         ))}
                       </div>
-                    ) : (
-                      <div className="empty-state">
-                        <History size={32} />
-                        <h3>A fresh start</h3>
-                        <p>
-                          Enable local history, then start a route. Your planned
-                          journeys will appear here.
+                      {discoveryStatus === "loading" && category && (
+                        <p className="state-line" role="status">
+                          <span className="spinner" /> Discovering{" "}
+                          {category.toLowerCase()}…
                         </p>
-                        <button
-                          className="outline-button"
-                          onClick={() => {
-                            setRemember(true);
-                            store("remember", true);
-                            notify("Local trip history enabled.");
-                          }}
-                        >
-                          Enable trip history
-                        </button>
+                      )}
+                      {discoveryError && (
+                        <div role="alert" className="inline-error">
+                          {discoveryError}
+                          <button
+                            onClick={() => {
+                              setDiscoveryRetry((n) => n + 1);
+                            }}
+                          >
+                            Retry nearby search
+                          </button>
+                        </div>
+                      )}
+                      {category &&
+                        discoveryStatus === "ready" &&
+                        !discover.length && (
+                          <p className="state-line">
+                            No {category.toLowerCase()} found within 3 km.
+                          </p>
+                        )}
+                      <div className="nearby-results">
+                        {discover.slice(0, 12).map((p) => (
+                          <button
+                            className="result-row"
+                            key={p.id}
+                            onClick={() => {
+                              setDetail(p);
+                              map.current?.locate(p.coords);
+                            }}
+                          >
+                            <MapPin size={18} />
+                            <span>
+                              <strong>{p.name}</strong>
+                              <small>{p.address}</small>
+                            </span>
+                            <small>{distance(meters(center, p.coords))}</small>
+                          </button>
+                        ))}
                       </div>
-                    )}
+                    </>
+                  )}
+                </section>
+                <div className="panel-footnote">
+                  <ShieldCheck size={14} /> Your journey. Your choices.
+                </div>
+              </>
+            )}
+            {page === "saved" && (
+              <>
+                <div className="planner-heading">
+                  <span className="eyebrow">YOUR WORLD, IN ONE PLACE</span>
+                  <h2>Keep your favorites close.</h2>
+                  <p>Home, work, and everywhere that matters.</p>
+                </div>
+                <button
+                  className="primary-button full"
+                  onClick={() => setModal("add-place")}
+                >
+                  <Plus size={18} /> Add a saved place
+                </button>
+                {!saved.length ? (
+                  <Empty icon={Bookmark} title="No saved places yet.">
+                    Save places you visit often for one-tap directions.
+                  </Empty>
+                ) : (
+                  <div className="saved-list">
+                    {saved.map((p) => (
+                      <article key={p.id}>
+                        <div className="section-title">
+                          <span className="category-tag">
+                            <PlaceIcon category={p.category} />
+                            {p.category}
+                          </span>
+                          <div className="button-row">
+                            <button
+                              className="icon-button"
+                              aria-label={`Edit ${p.name}`}
+                              onClick={() => editPlace(p)}
+                            >
+                              <Pencil size={17} />
+                            </button>
+                            <button
+                              className="icon-button"
+                              aria-label={`Delete ${p.name}`}
+                              onClick={() =>
+                                ask(
+                                  "Delete saved place?",
+                                  `Remove ${p.name} from this device?`,
+                                  () =>
+                                    setSaved(
+                                      saved.filter((s) => s.id !== p.id),
+                                    ),
+                                )
+                              }
+                            >
+                              <Trash2 size={17} />
+                            </button>
+                          </div>
+                        </div>
+                        <h3>{p.name}</h3>
+                        <p>{p.address}</p>
+                        <small>
+                          {p.coords[1].toFixed(4)}, {p.coords[0].toFixed(4)}
+                        </small>
+                        <button
+                          className="text-button"
+                          onClick={() => chooseDestination(p)}
+                        >
+                          Get directions <ArrowRight size={16} />
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+            {page === "trips" && (
+              <>
+                <div className="planner-heading">
+                  <span className="eyebrow">YOUR JOURNEYS, REMEMBERED</span>
+                  <h2>Every trip has a story.</h2>
+                  <p>Real journeys, recorded only when you choose.</p>
+                </div>
+                {!tracked && !startingTrip && (
+                  <button
+                    className="primary-button full"
+                    onClick={startTracking}
+                  >
+                    <Navigation size={18} /> Start a trip
+                  </button>
+                )}
+                {gps.error && (
+                  <p className="inline-error" role="alert">
+                    {gps.error}
+                  </p>
+                )}
+                {recovered?.points?.length > 0 && !tracked && (
+                  <div className="info-banner">
+                    <p>
+                      An unfinished recording was recovered. Tracking is off.
+                      <button
+                        onClick={() => {
+                          const points = recovered.points as Fix[];
+                          const t: Trip = {
+                            id: crypto.randomUUID(),
+                            startedAt: recovered.startedAt,
+                            endedAt: new Date(
+                              points.at(-1)!.timestamp,
+                            ).toISOString(),
+                            origin: positionPlace(
+                              points[0].coords,
+                              "Recovered start",
+                            ),
+                            destination: positionPlace(
+                              points.at(-1)!.coords,
+                              "Recovered end",
+                            ),
+                            mode: recovered.mode || "walk",
+                            points,
+                            duration: recovered.duration,
+                            distance: traceDistance(points),
+                          };
+                          saveCompleted(t);
+                        }}
+                      >
+                        Save recovered trip
+                      </button>
+                      <button
+                        onClick={() =>
+                          ask(
+                            "Discard recovered recording?",
+                            "This unfinished trace will be deleted.",
+                            () => {
+                              tracker.clear();
+                              setRecovered(null);
+                            },
+                          )
+                        }
+                      >
+                        Discard recording
+                      </button>
+                    </p>
+                  </div>
+                )}
+                {trips.length > 0 && (
+                  <>
+                    <div className="trip-filters">
+                      <label className="search-input">
+                        <Search size={16} />
+                        <input
+                          aria-label="Search trips"
+                          placeholder="Search your trips"
+                          value={tripQuery}
+                          onChange={(e) => setTripQuery(e.target.value)}
+                        />
+                      </label>
+                      <select
+                        aria-label="Filter trips by mode"
+                        value={tripMode}
+                        onChange={(e) => setTripMode(e.target.value)}
+                      >
+                        <option value="all">All modes</option>
+                        {modes.map((m) => (
+                          <option value={m.id} key={m.id}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="section-title">
+                      <h3>{filteredTrips.length} trips</h3>
+                      <button
+                        onClick={() =>
+                          ask(
+                            "Clear trip history?",
+                            "All recorded trips will be deleted from this device.",
+                            () => {
+                              setTrips([]);
+                              setReplay([]);
+                              setTripDetail(null);
+                            },
+                          )
+                        }
+                      >
+                        Clear history
+                      </button>
+                    </div>
                   </>
                 )}
-                {page === "offline" && (
-                  <>
-                    <div className="offline-illustration">
-                      <Map size={46} />
-                      <span>
-                        <Download size={19} />
-                      </span>
-                    </div>
-                    <h3 className="standalone-heading">
-                      A little preparation. A lot of freedom.
-                    </h3>
-                    <p className="body-copy">
-                      Save route summaries and written directions on this
-                      device. Map tiles and new routes require a connection.
-                    </p>
-                    <button
-                      className="primary-button full"
-                      onClick={cacheRoute}
-                    >
-                      <Download size={17} /> Save current route directions
-                    </button>
-                    <div className="section-title offline-title">
-                      <h3>Saved for later</h3>
-                      <span className="soft-tag">
-                        {offlineRoutes.length} ROUTES
-                      </span>
-                    </div>
-                    {offlineRoutes.map((r, i) => (
-                      <div className="offline-route" key={r.name}>
-                        <button onClick={() => setModal(`offline-${i}`)}>
+                {!trips.length ? (
+                  <Empty icon={RouteIcon} title="No trips recorded yet.">
+                    Start a trip to build your history.
+                  </Empty>
+                ) : !filteredTrips.length ? (
+                  <p className="state-line">No trips match this search.</p>
+                ) : (
+                  <div className="trip-list">
+                    {filteredTrips.map((t) => (
+                      <article key={t.id}>
+                        <button
+                          className="trip-summary"
+                          onClick={() => {
+                            setTripDetail(t);
+                            setModal("trip");
+                          }}
+                        >
                           <span className="list-icon">
-                            <RouteIcon size={19} />
+                            <RouteIcon size={20} />
                           </span>
                           <span>
-                            <strong>{r.name}</strong>
                             <small>
-                              {r.route.distance.toFixed(1)} km ·{" "}
-                              {r.route.steps.length} directions
+                              {new Date(t.startedAt).toLocaleDateString(
+                                undefined,
+                                {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                },
+                              )}{" "}
+                              · {t.mode}
+                            </small>
+                            <strong>
+                              {t.origin.name} → {t.destination.name}
+                            </strong>
+                            <small>
+                              {distance(t.distance)} ·{" "}
+                              {formatDuration(t.duration)}
                             </small>
                           </span>
+                          <ChevronRight size={17} />
                         </button>
-                        <button
-                          className="icon-button"
-                          aria-label={`Delete downloaded ${r.name} route`}
-                          onClick={() => {
-                            const next = offlineRoutes.filter(
-                              (_, index) => index !== i,
-                            );
-                            setOfflineRoutes(next);
-                            store("offline", next);
-                          }}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
+                      </article>
                     ))}
-                    <p className="panel-note">
-                      Full offline maps and routing require a self-hosted tile
-                      and routing service.
-                    </p>
-                  </>
+                  </div>
                 )}
-                {page === "insights" && (
+                {replay.length > 0 && (
+                  <div className="replay-card">
+                    <h3>{tripDetail?.destination.name}</h3>
+                    <p>
+                      Recorded route replay · {replayIndex + 1} /{" "}
+                      {replay.length} GPS points
+                    </p>
+                    <button
+                      className="outline-button"
+                      onClick={() => {
+                        setReplayIndex(0);
+                        setPlaying(!playing);
+                      }}
+                    >
+                      {playing ? <Pause size={16} /> : <Play size={16} />}{" "}
+                      {playing ? "Pause replay" : "Replay trip"}
+                    </button>
+                    <button
+                      className="text-button"
+                      onClick={() => {
+                        setReplay([]);
+                        setPlaying(false);
+                      }}
+                    >
+                      Close replay
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+            {page === "offline" && (
+              <>
+                <div className="planner-heading">
+                  <span className="eyebrow">A LITTLE PREPARATION</span>
+                  <h2>Ready for the quieter roads.</h2>
+                  <p>Your saved directions, wherever you go.</p>
+                </div>
+                <div className="offline-status">
+                  <span className="tiny-dot" />
+                  {online ? "You’re online" : "You’re offline"} ·{" "}
+                  {storageBytes === null
+                    ? "Storage estimate unavailable"
+                    : `${(storageBytes / 1048576).toFixed(1)} MB used by this site`}
+                </div>
+                <div className="info-banner">
+                  <Download size={20} />
+                  <p>
+                    <strong>Offline map viewing</strong>
+                    <br />
+                    Downloaded areas work at zoom levels 12–15.
+                    <br />
+                    <strong>Offline route calculation</strong>
+                    <br />
+                    Not supported. Calculate new routes while online.
+                  </p>
+                </div>
+                <h3 className="standalone-heading">Download a map area</h3>
+                <p className="body-copy">
+                  Move the map to your area. The download covers 36 tiles around
+                  its center, at four zoom levels. Expected size: about 1–8 MB.
+                </p>
+                <label className="form-label">
+                  Area name
+                  <input
+                    value={regionName}
+                    onChange={(e) => setRegionName(e.target.value)}
+                    placeholder="e.g. Around home"
+                    maxLength={60}
+                  />
+                </label>
+                {!config.offlineTiles && (
+                  <div className="inline-notice">
+                    Area downloads need an operator-configured source with
+                    offline permission. Public OSM tiles are not
+                    bulk-downloaded. Saved directions work now.
+                  </div>
+                )}
+                {downloadProgress !== null ? (
+                  <>
+                    <progress
+                      value={downloadProgress}
+                      max="100"
+                      aria-label="Region download progress"
+                    />
+                    <p className="state-line">
+                      Downloading {downloadProgress}%
+                    </p>
+                    <button
+                      className="outline-button full"
+                      onClick={() => downloadController.current?.abort()}
+                    >
+                      Cancel download
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    className="primary-button full"
+                    disabled={!config.offlineTiles || !online}
+                    onClick={download}
+                  >
+                    <Download size={17} /> Download current area
+                  </button>
+                )}
+                {downloadError && (
+                  <p className="inline-error" role="alert">
+                    {downloadError}
+                  </p>
+                )}
+                <div className="section-title offline-title">
+                  <h3>Downloaded areas</h3>
+                  <span className="soft-tag">{regions.length}</span>
+                </div>
+                {!regions.length && (
+                  <p className="body-copy">No areas downloaded yet.</p>
+                )}
+                {regions.map((r) => (
+                  <div className="offline-route" key={r.id}>
+                    <button
+                      onClick={() => {
+                        setOfflineRegion(r);
+                        setTheme("Standard");
+                        setTimeout(() => map.current?.locate(r.center), 400);
+                        setSheet(false);
+                      }}
+                    >
+                      <Map size={20} />
+                      <span>
+                        <strong>{r.name}</strong>
+                        <small>
+                          {(r.bytes / 1048576).toFixed(1)} MB · {r.tiles.length}{" "}
+                          tiles
+                        </small>
+                      </span>
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label={`Delete ${r.name}`}
+                      onClick={() =>
+                        ask("Delete downloaded area?", r.name, async () => {
+                          await deleteRegion(r);
+                          setRegions(regions.filter((x) => x.id !== r.id));
+                          if (offlineRegion?.id === r.id)
+                            setOfflineRegion(null);
+                        })
+                      }
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                ))}
+                {offlineRegion && (
+                  <button
+                    className="text-button"
+                    onClick={() => setOfflineRegion(null)}
+                  >
+                    Return to online map
+                  </button>
+                )}
+                <div className="section-title offline-title">
+                  <h3>Saved directions</h3>
+                </div>
+                {activeRoute && destination && (
+                  <button
+                    className="outline-button full"
+                    onClick={() =>
+                      safe(() => {
+                        setDirections(
+                          [
+                            { destination, route: activeRoute },
+                            ...directions.filter(
+                              (r) => r.destination.id !== destination.id,
+                            ),
+                          ].slice(0, 30),
+                        );
+                        notify("Directions saved for offline reading.");
+                      })
+                    }
+                  >
+                    <Download size={16} /> Save current directions
+                  </button>
+                )}
+                {!directions.length && (
+                  <p className="body-copy">
+                    Plan a route and save its directions to read them offline.
+                  </p>
+                )}
+                {directions.map((d, i) => (
+                  <div className="offline-route" key={d.destination.id}>
+                    <button onClick={() => setModal(`directions-${i}`)}>
+                      <RouteIcon size={20} />
+                      <span>
+                        <strong>{d.destination.name}</strong>
+                        <small>
+                          {distance(d.route.distance)} ·{" "}
+                          {formatDuration(d.route.duration)}
+                        </small>
+                      </span>
+                    </button>
+                    <button
+                      className="icon-button"
+                      aria-label={`Delete directions to ${d.destination.name}`}
+                      onClick={() =>
+                        ask(
+                          "Delete saved directions?",
+                          d.destination.name,
+                          () =>
+                            setDirections(directions.filter((_, n) => n !== i)),
+                        )
+                      }
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </div>
+                ))}
+              </>
+            )}
+            {page === "insights" && (
+              <>
+                <div className="planner-heading">
+                  <span className="eyebrow">
+                    YOUR PERSONAL MOBILITY SNAPSHOT
+                  </span>
+                  <h2>
+                    Small journeys.
+                    <br />
+                    Bigger picture.
+                  </h2>
+                  <p>Insights from your recorded trips, on your device.</p>
+                </div>
+                {!trips.length ? (
+                  <Empty icon={TrendingUp} title="Not enough trip data yet.">
+                    Your insights will appear after you’ve completed a few
+                    trips.
+                  </Empty>
+                ) : (
                   <>
                     <div className="insights-hero">
-                      <Sparkles size={24} />
-                      <span>YOUR PERSONAL MOBILITY SNAPSHOT</span>
-                      <h3>
-                        Small journeys.
-                        <br />
-                        Bigger picture.
-                      </h3>
-                      <p>Learn a little about the way you move.</p>
+                      <Sparkles size={25} />
+                      <h3>Your week in motion.</h3>
+                      <p>
+                        You travelled{" "}
+                        {distance(
+                          stats.weekly.reduce((n, t) => n + t.distance, 0),
+                        )}{" "}
+                        this week across {stats.weekly.length}{" "}
+                        {stats.weekly.length === 1 ? "trip" : "trips"}.
+                      </p>
                     </div>
                     <div className="stats-grid">
                       <div>
-                        <RouteIcon size={18} />
-                        <strong>{trips.length}</strong>
-                        <span>Planned trips</span>
+                        <RouteIcon size={19} />
+                        <strong>{stats.count}</strong>
+                        <span>Total recorded trips</span>
                       </div>
                       <div>
-                        <MapPin size={18} />
-                        <strong>
-                          {trips.reduce((a, t) => a + t.distance, 0).toFixed(1)}
-                          <small> km</small>
+                        <MapPin size={19} />
+                        <strong>{distance(stats.distance)}</strong>
+                        <span>Total distance travelled</span>
+                      </div>
+                      <div>
+                        <Clock3 size={19} />
+                        <strong>{formatDuration(stats.average)}</strong>
+                        <span>Average trip duration</span>
+                      </div>
+                      <div>
+                        <Navigation size={19} />
+                        <strong className="capitalize">
+                          {stats.modes[0]?.[0]}
                         </strong>
-                        <span>Distance planned</span>
+                        <span>Most-used mode</span>
                       </div>
                     </div>
-                    <div className="section-title">
-                      <h3>Your familiar places</h3>
-                    </div>
-                    {trips.length ? (
-                      <div className="insight-place">
-                        <Home size={22} />
-                        <div>
-                          <strong>{topPlace.name}</strong>
-                          <p>Your most planned destination</p>
+                    <h3 className="standalone-heading">This week</h3>
+                    <div
+                      className="activity-chart"
+                      aria-label="Distance travelled by day this week"
+                    >
+                      {stats.days.map((day) => (
+                        <div
+                          key={day.label}
+                          title={`${day.label}: ${distance(day.distance)}`}
+                        >
+                          <span>{distance(day.distance)}</span>
+                          <div
+                            style={{
+                              height: `${Math.max(3, (day.distance / Math.max(1, ...stats.days.map((d) => d.distance))) * 90)}px`,
+                            }}
+                          />
+                          <small>{day.label}</small>
                         </div>
+                      ))}
+                    </div>
+                    <h3 className="standalone-heading">Most visited places</h3>
+                    {stats.destinations.slice(0, 4).map(([name, count]) => (
+                      <div className="insight-row" key={name}>
+                        <span>{name}</span>
+                        <strong>{count} visits</strong>
                       </div>
-                    ) : (
-                      <p className="body-copy">
-                        Your insights grow with you. Turn on local trip history
-                        to discover your most frequent destinations.
-                      </p>
-                    )}
+                    ))}
+                    <h3 className="standalone-heading">Frequent routes</h3>
+                    {stats.routes.slice(0, 3).map(([name, count]) => (
+                      <div className="insight-row" key={name}>
+                        <span>{name}</span>
+                        <strong>{count}</strong>
+                      </div>
+                    ))}
                     <div className="info-banner">
-                      <LockKeyhole size={18} />
+                      <TrendingUp size={19} />
                       <p>
-                        Insights use only your locally saved trip plans. No
-                        background location tracking.
+                        This month: {stats.monthly.length} trips covering{" "}
+                        {distance(
+                          stats.monthly.reduce((n, t) => n + t.distance, 0),
+                        )}
+                        .<br />
+                        {stats.morning >= 3
+                          ? `${stats.morning} recorded weekday trips started between 6 and 10 am — a possible morning commute pattern.`
+                          : "Not enough weekday morning trips to identify a commute pattern."}
                       </p>
                     </div>
                   </>
                 )}
+              </>
+            )}
+            {page === "privacy" && (
+              <>
+                <div className="planner-heading">
+                  <span className="eyebrow">YOUR DATA, YOUR DECISION</span>
+                  <h2>Privacy, made clear.</h2>
+                  <p>You’re always in control of recording.</p>
+                </div>
+                <div className="privacy-status">
+                  <ShieldCheck size={25} />
+                  <div>
+                    <strong>Location permission: {gps.permission}</strong>
+                    <p>
+                      {gps.watching
+                        ? "Live location is active."
+                        : "Location tracking is off."}
+                    </p>
+                  </div>
+                </div>
+                {gps.watching && (
+                  <button
+                    className="outline-button full"
+                    onClick={() => {
+                      gps.stop();
+                      if (tracker.state === "recording") tracker.pause();
+                      exitNavigation();
+                    }}
+                  >
+                    Stop live location access
+                  </button>
+                )}
+                <h3 className="standalone-heading">
+                  What stays on this device
+                </h3>
+                <p className="body-copy">
+                  Your local profile, saved places, recent searches, recorded
+                  GPS trips, preferences, and saved directions live in this
+                  browser. Downloaded map tiles use Cache Storage. None of this
+                  local storage is encrypted or cloud-synced.
+                </p>
+                <h3 className="standalone-heading">What leaves this device</h3>
+                <p className="body-copy">
+                  Search text, nearby search coordinates and requested route
+                  endpoints pass through this deployment’s API to Photon,
+                  Overpass and Valhalla (or operator-configured providers). Your
+                  map viewport and IP address reach the map tile providers.
+                  Recorded GPS traces stay in this browser. Navigation and
+                  nearby searches can send current coordinates to these
+                  services. External fonts also make network requests. Hosting
+                  providers may retain request metadata.
+                </p>
+                <Toggle
+                  title="Save completed trips"
+                  detail="Only records after you explicitly start a trip"
+                  value={settings.saveHistory}
+                  onChange={(v) =>
+                    updateSettings({ ...settings, saveHistory: v })
+                  }
+                />
+                <button className="modal-action" onClick={exportAll}>
+                  <Download size={18} /> Export my data{" "}
+                  <ArrowUpRight size={16} />
+                </button>
+                <button
+                  className="modal-action"
+                  onClick={() =>
+                    ask(
+                      "Clear location history?",
+                      "Delete recorded trips and any recoverable unfinished recording. An active recording will be stopped.",
+                      () => {
+                        gps.stop();
+                        tracker.clear();
+                        setRecovered(null);
+                        setTrips([]);
+                        setReplay([]);
+                        setNavigation(false);
+                      },
+                    )
+                  }
+                >
+                  <Trash2 size={18} /> Clear location history
+                </button>
+                <button
+                  className="modal-action"
+                  onClick={() =>
+                    ask(
+                      "Clear saved places?",
+                      "This removes all saved places from this browser.",
+                      () => setSaved([]),
+                    )
+                  }
+                >
+                  <Trash2 size={18} /> Clear saved places
+                </button>
+                <button
+                  className="modal-action"
+                  onClick={() =>
+                    ask(
+                      "Clear recent searches?",
+                      "Remove all recent searches on this device.",
+                      () => setRecents([]),
+                    )
+                  }
+                >
+                  <Trash2 size={18} /> Clear recent searches
+                </button>
+                <button
+                  className="modal-action danger-text"
+                  onClick={() =>
+                    ask(
+                      "Delete all local data?",
+                      "This stops location access and deletes your profile, trips, saved places, preferences, searches, and downloaded areas. Export first if you want a copy.",
+                      async () => {
+                        gps.stop();
+                        tracker.clear();
+                        downloadController.current?.abort();
+                        window.speechSynthesis?.cancel();
+                        await clearRegions();
+                        clearLocal();
+                        location.reload();
+                      },
+                    )
+                  }
+                >
+                  <Trash2 size={18} /> Delete all local data
+                </button>
+              </>
+            )}
+            {page === "settings" && (
+              <>
+                <div className="planner-heading">
+                  <span className="eyebrow">MAKE YOURSELF AT HOME</span>
+                  <h2>Your way to Waypoint.</h2>
+                  <p>Little choices for a better everyday.</p>
+                </div>
+                <h3 className="standalone-heading">Appearance</h3>
+                <label className="form-label">
+                  Theme
+                  <select
+                    value={settings.appearance}
+                    onChange={(e) =>
+                      updateSettings({
+                        ...settings,
+                        appearance: e.target.value as Settings["appearance"],
+                      })
+                    }
+                  >
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                    <option value="system">Use system setting</option>
+                  </select>
+                </label>
+                <h3 className="standalone-heading">Map & navigation</h3>
+                <label className="form-label">
+                  Default map style
+                  <select
+                    value={settings.mapStyle}
+                    onChange={(e) => {
+                      updateSettings({
+                        ...settings,
+                        mapStyle: e.target.value as Settings["mapStyle"],
+                      });
+                      setTheme(e.target.value as Settings["mapStyle"]);
+                    }}
+                  >
+                    {["Standard", "Dark", "Terrain"].map((t) => (
+                      <option key={t}>{t}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-label">
+                  Distance units
+                  <select
+                    value={settings.units}
+                    onChange={(e) =>
+                      updateSettings({
+                        ...settings,
+                        units: e.target.value as "km" | "mi",
+                      })
+                    }
+                  >
+                    <option value="km">Kilometers</option>
+                    <option value="mi">Miles</option>
+                  </select>
+                </label>
+                <label className="form-label">
+                  Default transport mode
+                  <select
+                    value={settings.mode}
+                    onChange={(e) => {
+                      updateSettings({
+                        ...settings,
+                        mode: e.target.value as Mode,
+                      });
+                      setMode(e.target.value as Mode);
+                    }}
+                  >
+                    {modes.map((m) => (
+                      <option value={m.id} key={m.id}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <Toggle
+                  title="Auto-recenter during navigation"
+                  value={settings.autoRecenter}
+                  onChange={(v) =>
+                    updateSettings({ ...settings, autoRecenter: v })
+                  }
+                />
+                <Toggle
+                  title="Voice directions"
+                  detail="Experimental browser speech at nearby maneuver points"
+                  value={settings.voice}
+                  onChange={(v) => updateSettings({ ...settings, voice: v })}
+                />
+                <button
+                  className="modal-action"
+                  onClick={() => setModal("options")}
+                >
+                  <SlidersHorizontal size={18} /> Route preferences
+                </button>
+                <button className="modal-action" onClick={() => go("privacy")}>
+                  <ShieldCheck size={18} /> Location and privacy controls
+                </button>
+                <h3 className="standalone-heading about-heading">
+                  About Waypoint
+                </h3>
+                <p className="body-copy">
+                  Waypoint — Find your way, your way.
+                  <br />
+                  Version {config.version}
+                  <br />
+                  Open-source mapping with MapLibre, Leaflet, Valhalla, Photon
+                  and OpenStreetMap.
+                </p>
+                <a
+                  className="text-button"
+                  href="https://www.openstreetmap.org/copyright"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  © OpenStreetMap contributors <ArrowUpRight size={14} />
+                </a>
+                <a
+                  className="text-button"
+                  href="https://openmaptiles.org/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  © OpenMapTiles <ArrowUpRight size={14} />
+                </a>
+                {configError && <p className="inline-error">{configError}</p>}
               </>
             )}
           </section>
           <section
+            ref={mapContainer}
             className={`map-workspace ${theme === "Dark" ? "dark-map" : ""}`}
-            aria-label="Map and route preview"
+            aria-label="Interactive map and navigation"
           >
-            <MapView
-              ref={mapRef}
-              route={route}
-              destination={destination}
-              origin={origin}
-              theme={theme}
-              showRoute={route.coords.length > 0}
-              categoryPlaces={categoryPlaces}
-              onPlace={selectPlace}
-            />
-            <div className="map-top">
-              <div className="category-chips">
-                {categories.map((c) => (
-                  <button
-                    key={c.name}
-                    className={category === c.name ? "chosen" : ""}
-                    onClick={() => {
-                      setCategory(category === c.name ? "" : c.name);
-                      mapRef.current?.reset();
-                    }}
-                  >
-                    <c.icon size={15} />
-                    {c.name}
-                  </button>
-                ))}
-              </div>
+            <Suspense fallback={<div className="map-status">Loading map…</div>}>
+              <MapView
+                ref={map}
+                origin={replay.length ? tripDetail?.origin || null : origin}
+                destination={
+                  replay.length ? tripDetail?.destination || null : destination
+                }
+                fix={gps.fix}
+                routes={selectedRoutes}
+                selected={selected}
+                trace={displayedTrace}
+                theme={theme}
+                places={displayedPlaces}
+                onPlace={onMapPlace}
+                onRoute={setSelected}
+                offline={!!offlineRegion}
+                offlineAttribution={offlineRegion?.attribution || ""}
+              />
+            </Suspense>
+            <div className="mobile-search">
               <button
-                className="map-menu icon-button"
-                aria-label="Map information"
-                onClick={() => setModal("map-info")}
+                aria-label="Open destination search"
+                onClick={() => {
+                  go("explore");
+                  setModal("search");
+                }}
               >
-                <MoreHorizontal size={21} />
+                <Search size={19} />
+                <span>{destination?.name || "Where do you want to go?"}</span>
+                <span className="mobile-brand">W</span>
               </button>
             </div>
-            <div className="map-context">
-              <span className="tiny-dot" />{" "}
-              {category
-                ? `${categoryPlaces.length} ${category.toLowerCase()} nearby`
-                : "A world of possibilities"}
-              <span className="context-divider">|</span>San Francisco
-            </div>
-            <div className="map-city-label">
-              <span>SAN FRANCISCO</span>
-              <small>Find a different kind of everyday.</small>
-            </div>
-            {isPreview && route.coords.length > 0 && (
-              <div className="route-map-label">
-                <CarFront size={16} />
-                <strong>12 min</strong>
-                <span>Preview route</span>
+            {!navigation && (
+              <div className="map-top">
+                <div className="map-live-status">
+                  <span
+                    className={`tiny-dot ${gps.watching ? "pulsing" : ""}`}
+                  />
+                  {offlineRegion
+                    ? `Offline area: ${offlineRegion.name}`
+                    : gps.watching
+                      ? "Live location active"
+                      : gps.fix
+                        ? "Your location is ready"
+                        : "Explore freely. Locate when you’re ready."}
+                </div>
+                <button
+                  className="icon-button map-menu"
+                  aria-label="Fullscreen map"
+                  onClick={() => {
+                    if (document.fullscreenElement) document.exitFullscreen?.();
+                    else if (mapContainer.current?.requestFullscreen)
+                      mapContainer.current.requestFullscreen().catch(() => {
+                        setSheet(false);
+                        notify("Map expanded. Use the panel handle to return.");
+                      });
+                    else setSheet(false);
+                  }}
+                >
+                  <Maximize size={18} />
+                </button>
               </div>
             )}
             <div className="map-controls">
               <button
-                aria-label="Reset map bearing and view"
                 className="compass-control"
-                onClick={() => mapRef.current?.reset()}
+                aria-label="Reset map orientation"
+                onClick={() => map.current?.reset()}
               >
                 <span>N</span>
-                <Navigation2 size={21} />
+                <Navigation2 size={20} />
               </button>
               <div className="zoom-controls">
                 <button
                   aria-label="Zoom in"
-                  onClick={() => mapRef.current?.zoom(1)}
+                  onClick={() => map.current?.zoom(1)}
                 >
-                  <Plus size={19} />
+                  <Plus size={21} />
                 </button>
                 <span />
                 <button
                   aria-label="Zoom out"
-                  onClick={() => mapRef.current?.zoom(-1)}
+                  onClick={() => map.current?.zoom(-1)}
                 >
-                  <Minus size={19} />
+                  <Minus size={21} />
                 </button>
               </div>
-              <button aria-label="Find my location" onClick={locate}>
-                <LocateFixed size={20} />
+              <button
+                aria-label="Locate me"
+                onClick={
+                  navigation && gps.fix
+                    ? () => map.current?.locate(gps.fix!.coords)
+                    : locate
+                }
+              >
+                <LocateFixed size={21} />
               </button>
             </div>
             <div className="map-bottom">
               <div className="map-layer-wrap">
                 {layers && (
                   <div className="layer-picker">
-                    <div className="section-title">
-                      <h3>Make it your map</h3>
-                      <button
-                        aria-label="Close layers"
-                        onClick={() => setLayers(false)}
-                      >
-                        <X size={14} />
-                      </button>
-                    </div>
+                    <h3>Make it your map</h3>
                     <div>
-                      {["Standard", "Dark", "Terrain"].map((t) => (
+                      {(["Standard", "Dark", "Terrain"] as const).map((t) => (
                         <button
-                          className={theme === t ? "chosen" : ""}
                           key={t}
+                          className={theme === t ? "chosen" : ""}
+                          aria-pressed={theme === t}
                           onClick={() => {
                             setTheme(t);
                             setLayers(false);
@@ -1164,10 +2256,9 @@ function App() {
                           <span
                             className={`layer-thumbnail ${t.toLowerCase()}`}
                           >
-                            <Map size={23} />
+                            <Map size={24} />
                           </span>
                           {t}
-                          {theme === t && <Check size={12} />}
                         </button>
                       ))}
                     </div>
@@ -1175,578 +2266,648 @@ function App() {
                 )}
                 <button
                   className="layers-button"
+                  aria-expanded={layers}
                   onClick={() => setLayers(!layers)}
                 >
-                  <span className="layers-preview">
-                    <Layers size={20} />
-                  </span>
-                  <span>Map layers</span>
-                  <ChevronDown size={13} />
+                  <Layers size={20} /> Map layers
                 </button>
               </div>
-              <div className="map-data">
-                <span className="tiny-dot" /> Open data. Open possibilities.
-              </div>
+              <button
+                className="map-about"
+                onClick={() => setModal("attribution")}
+              >
+                Map credits & data <ArrowUpRight size={13} />
+              </button>
             </div>
-            <div className="map-bottom-card">
-              {navigating ? (
-                <div className="navigation-card">
-                  <div className="navigation-top">
-                    <span className="navigation-arrow">
-                      <ArrowUpRight size={28} />
+            {navigation && activeRoute ? (
+              <div className="live-navigation">
+                <div className="navigation-instruction">
+                  <Navigation size={28} />
+                  <div>
+                    <span className="eyebrow">
+                      {gps.status === "loading"
+                        ? "FINDING YOUR LOCATION"
+                        : gps.watching
+                          ? "LIVE NAVIGATION"
+                          : "LOCATION PAUSED"}
+                    </span>
+                    <h3>{currentStep?.text || "Follow the displayed route"}</h3>
+                    <p>{currentStep?.road || "Road name unavailable"}</p>
+                  </div>
+                  <button
+                    className="icon-button"
+                    aria-label="Exit navigation"
+                    onClick={exitNavigation}
+                  >
+                    <X size={23} />
+                  </button>
+                </div>
+                <div className="navigation-destination">
+                  <strong>
+                    {formatDuration(
+                      navigationProgress?.seconds ?? activeRoute.duration,
+                    )}
+                  </strong>
+                  <span>
+                    {distance(
+                      navigationProgress?.distance ?? activeRoute.distance,
+                    )}{" "}
+                    remaining
+                    <br />
+                    To {destination?.name}
+                  </span>
+                  <button
+                    className="icon-button"
+                    aria-label="Recenter navigation"
+                    onClick={() =>
+                      gps.fix && map.current?.locate(gps.fix.coords)
+                    }
+                  >
+                    <LocateFixed size={24} />
+                  </button>
+                </div>
+                {navigationProgress?.offRoute && (
+                  <div className="inline-notice">
+                    You may be off route.{" "}
+                    <button
+                      onClick={() => {
+                        if (gps.fix) setOrigin(positionPlace(gps.fix.coords));
+                      }}
+                    >
+                      Recalculate from here
+                    </button>
+                  </div>
+                )}
+                {gps.error && <p className="inline-error">{gps.error}</p>}
+                <small>
+                  GPS estimates · obey current road signs and conditions
+                </small>
+              </div>
+            ) : (
+              activeRoute &&
+              destination &&
+              !replay.length && (
+                <div className="map-bottom-card">
+                  <div className="route-summary-heading">
+                    <span className="route-summary-icon">
+                      <RouteIcon size={20} />
                     </span>
                     <div>
-                      <span className="eyebrow">
-                        DIRECTION {step + 1} OF {route.steps.length}
-                      </span>
-                      <h3>{route.steps[step]}</h3>
+                      <h3>{destination.name}</h3>
+                      <p>
+                        {mode === "drive"
+                          ? "Driving"
+                          : mode === "cycle"
+                            ? "Cycling"
+                            : mode === "walk"
+                              ? "Walking"
+                              : "Transit"}{" "}
+                        · {activeRoute.label}
+                      </p>
                     </div>
                     <button
                       className="icon-button"
-                      aria-label="Stop navigation"
-                      onClick={() => {
-                        setNavigating(false);
-                        window.speechSynthesis?.cancel();
-                        notify("Route preview ended.");
-                      }}
+                      aria-label="Save destination"
+                      onClick={() => editPlace(destination)}
                     >
-                      <X size={18} />
+                      <Bookmark size={18} />
                     </button>
-                  </div>
-                  <div className="navigation-actions">
-                    <small>Route preview · follow local road signs</small>
-                    <button
-                      onClick={() => {
-                        if (step < route.steps.length - 1) {
-                          setStep(step + 1);
-                          if (voice) speak(route.steps[step + 1]);
-                        } else {
-                          setNavigating(false);
-                          notify("You’ve reached the end of your route.");
-                        }
-                      }}
-                    >
-                      {step < route.steps.length - 1
-                        ? "Next direction"
-                        : "Finish"}{" "}
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="route-summary-heading">
-                    <span className="route-summary-icon">
-                      <Sparkles size={18} />
-                    </span>
-                    <div>
-                      <h3>
-                        {route.coords.length
-                          ? "A better route, just for you"
-                          : "Your next journey starts here"}
-                      </h3>
-                      <p>
-                        {isPreview
-                          ? "Explore a sample journey through the city"
-                          : "Calculated with open road data"}
-                      </p>
-                    </div>
-                    <span className="best-route-tag">
-                      {isPreview ? "ROUTE PREVIEW" : "READY TO GO"}
-                    </span>
                   </div>
                   <div className="route-summary-body">
                     <div className="route-metrics">
                       <div>
-                        <strong>
-                          {route.coords.length ? route.duration : "—"}
-                          <small> min</small>
-                        </strong>
-                        <span>
-                          {isPreview
-                            ? "Estimated travel time"
-                            : "Estimated driving time"}
-                        </span>
+                        <strong>{formatDuration(activeRoute.duration)}</strong>
+                        <span>Estimated travel time</span>
                       </div>
-                      <div className="metric-divider" />
                       <div>
-                        <strong>
-                          {route.coords.length
-                            ? route.distance.toFixed(1)
-                            : "—"}
-                          <small> km</small>
-                        </strong>
-                        <span>
-                          Via{" "}
-                          {stops.length
-                            ? `${stops.length} stop${stops.length > 1 ? "s" : ""}`
-                            : isPreview
-                              ? "Market Street"
-                              : "open roads"}
-                        </span>
+                        <strong>{distance(activeRoute.distance)}</strong>
+                        <span>No live traffic</span>
                       </div>
                     </div>
-                    <button
-                      className="start-button"
-                      disabled={!route.coords.length}
-                      onClick={startJourney}
-                    >
-                      <Navigation size={16} />
-                      {isPreview ? "Preview route" : "Start route"}
-                      <ArrowRight size={15} />
+                    <button className="start-button" onClick={startNavigation}>
+                      <Navigation size={16} /> Navigate <ArrowRight size={15} />
                     </button>
                   </div>
                   <div className="route-summary-footer">
-                    <span>
-                      <Leaf size={13} />
-                      {isPreview
-                        ? "A thoughtful way through the city"
-                        : "Open source routing · no live traffic"}
-                    </span>
+                    <span>Open road data · {activeRoute.provider}</span>
+                    {!tracked && (
+                      <button
+                        onClick={startTracking}
+                        disabled={startingTrip}
+                        aria-label="Start trip recording"
+                      >
+                        <Play size={18} /> Record trip
+                      </button>
+                    )}
                     <button
-                      aria-label="Save route directions"
-                      onClick={cacheRoute}
+                      aria-label="Save directions for offline reading"
+                      onClick={() =>
+                        safe(() => {
+                          setDirections(
+                            [
+                              { destination, route: activeRoute },
+                              ...directions.filter(
+                                (r) => r.destination.id !== destination.id,
+                              ),
+                            ].slice(0, 30),
+                          );
+                          notify("Directions saved for offline reading.");
+                        })
+                      }
                     >
-                      <Download size={14} />
+                      <Download size={18} />
                     </button>
                     <button
-                      aria-label={
-                        voice
-                          ? "Mute voice directions"
-                          : "Enable voice directions"
-                      }
-                      className={voice ? "enabled" : ""}
-                      onClick={() => {
-                        setVoice(!voice);
-                        if (voice) window.speechSynthesis?.cancel();
-                        notify(
-                          voice
-                            ? "Voice directions off"
-                            : "Voice directions on",
-                        );
-                      }}
+                      aria-label="View turn-by-turn directions"
+                      onClick={() => setModal("directions")}
                     >
-                      {voice ? <Volume2 size={15} /> : <VolumeX size={15} />}
+                      <RouteIcon size={18} />
                     </button>
                   </div>
-                </>
-              )}
-            </div>
-            <div className="map-scale">
-              <span /> 500 m
-            </div>
+                </div>
+              )
+            )}
           </section>
         </main>
         <footer className="app-footer">
-          <span>
-            <Logo small /> Thoughtfully built for your everyday.
-          </span>
-          <span>
-            <span className="footer-status" /> All journeys start with you{" "}
-            <span className="footer-separator">·</span>
-            <button onClick={() => setModal("map-info")}>
-              Powered by OpenStreetMap <ArrowUpRight size={11} />
-            </button>
-          </span>
+          <span>Waypoint — Find your way, your way.</span>
+          <button onClick={() => setModal("attribution")}>
+            © OpenStreetMap · © OpenMapTiles <ArrowUpRight size={12} />
+          </button>
         </footer>
       </div>
+      {(tracked || startingTrip || tracker.pending) && (
+        <div className="tracking-bar" role="status">
+          <span
+            className={`tracking-dot ${tracker.state === "recording" ? "pulsing" : ""}`}
+          />
+          <div>
+            <strong>
+              {startingTrip
+                ? "Waiting for location permission…"
+                : tracker.pending
+                  ? "Recording ready to save"
+                  : tracker.state === "paused"
+                    ? "Trip paused"
+                    : "Recording your trip"}
+            </strong>
+            <small>
+              {Math.floor(tracker.elapsed / 60)}:
+              {String(tracker.elapsed % 60).padStart(2, "0")} ·{" "}
+              {distance(tracker.distance)}
+              {gps.fix?.speed != null && tracker.state === "recording"
+                ? ` · ${(gps.fix.speed * (settings.units === "mi" ? 2.23694 : 3.6)).toFixed(0)} ${settings.units === "mi" ? "mph" : "km/h"}`
+                : ""}
+            </small>
+          </div>
+          {tracked && (
+            <>
+              <button
+                aria-label={
+                  tracker.state === "recording" ? "Pause trip" : "Resume trip"
+                }
+                onClick={() => {
+                  if (tracker.state === "recording") {
+                    gps.stop();
+                    tracker.pause();
+                  } else {
+                    tracker.resume();
+                    gps.start(true, tracker.sample, () => {
+                      tracker.pause();
+                      gps.stop();
+                    });
+                  }
+                }}
+              >
+                {tracker.state === "recording" ? (
+                  <Pause size={20} />
+                ) : (
+                  <Play size={20} />
+                )}
+              </button>
+              <button aria-label="End trip" onClick={endTrip}>
+                <Square size={19} />
+                <span>End trip</span>
+              </button>
+            </>
+          )}
+          {startingTrip && (
+            <button
+              onClick={() => {
+                gps.stop();
+                setStartingTrip(false);
+              }}
+            >
+              Cancel
+            </button>
+          )}
+          {tracker.pending && (
+            <>
+              <button onClick={() => saveCompleted(tracker.pending!)}>
+                Save
+              </button>
+              <button
+                onClick={() =>
+                  exportJSON(tracker.pending, "waypoint-recording.json")
+                }
+              >
+                Export
+              </button>
+              <button
+                aria-label="Discard unsaved trip"
+                onClick={() =>
+                  ask(
+                    "Discard unsaved trip?",
+                    "This trace will be deleted.",
+                    () => tracker.clear(),
+                  )
+                }
+              >
+                <Trash2 size={18} />
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {tracker.storageError && (
+        <div className="tracking-error" role="alert">
+          {tracker.storageError}
+        </div>
+      )}
+      <nav className="bottom-nav" aria-label="Mobile navigation">
+        {navItems.slice(0, 3).map((item) => (
+          <button
+            key={item.id}
+            aria-current={page === item.id ? "page" : undefined}
+            className={page === item.id ? "active" : ""}
+            onClick={() => go(item.id)}
+          >
+            <item.icon size={22} />
+            <span>{item.id === "saved" ? "Saved" : item.label}</span>
+          </button>
+        ))}
+        <button
+          className={more ? "active" : ""}
+          aria-expanded={more}
+          onClick={() => setMore(!more)}
+        >
+          <Menu size={22} />
+          <span>More</span>
+        </button>
+      </nav>
+      {more && (
+        <div className="mobile-more">
+          {[
+            ...navItems.slice(3),
+            { id: "privacy", label: "Privacy Center", icon: ShieldCheck },
+            { id: "settings", label: "Settings", icon: Settings2 },
+          ].map((i) => (
+            <button key={i.id} onClick={() => go(i.id)}>
+              <i.icon size={20} />
+              {i.label}
+              <ChevronRight size={17} />
+            </button>
+          ))}
+        </div>
+      )}
       {toast && (
         <div className="toast" role="status">
-          <CheckCheck size={18} />
+          <Check size={18} />
           {toast}
           <button
             aria-label="Dismiss notification"
             onClick={() => setToast("")}
           >
-            <X size={15} />
+            <X size={17} />
           </button>
         </div>
       )}
+      {confirm && (
+        <Dialog title={confirm.title} onClose={() => setConfirm(null)}>
+          <p className="body-copy">{confirm.body}</p>
+          <div className="button-row">
+            <button
+              className="danger-button"
+              onClick={async () => {
+                try {
+                  await confirm.action();
+                  setConfirm(null);
+                  notify("Your data has been updated.");
+                } catch (e) {
+                  notify((e as Error).message);
+                }
+              }}
+            >
+              Confirm deletion
+            </button>
+            <button className="outline-button" onClick={() => setConfirm(null)}>
+              Keep it
+            </button>
+          </div>
+        </Dialog>
+      )}
       {modal && (
-        <Modal
+        <Dialog
           title={
-            modal === "privacy"
-              ? "Your privacy, your choice"
-              : modal === "settings"
-                ? "Make Waypoint yours"
-                : modal === "profile"
-                  ? "Your personal workspace"
-                  : modal === "origin"
-                    ? "Choose your starting point"
-                    : modal === "stops"
-                      ? "A little stop along the way"
-                      : modal === "preferences"
-                        ? "Your route preferences"
-                        : modal === "save-place"
-                          ? "Keep a favorite close"
-                          : modal === "map-info"
-                            ? "A world built on open data"
-                            : modal === "delete"
-                              ? "Start with a clean slate?"
-                              : "Your saved directions"
+            modal === "origin"
+              ? "Choose a starting point"
+              : modal === "profile"
+                ? "Your personal workspace"
+                : modal === "options"
+                  ? "Your route preferences"
+                  : modal === "save"
+                    ? "Save a place that matters"
+                    : modal === "add-place"
+                      ? "Find a place to save"
+                      : modal === "stop"
+                        ? "Add a stop along the way"
+                        : modal === "search"
+                          ? "Where would you like to go?"
+                          : modal === "trip"
+                            ? "Your recorded journey"
+                            : modal === "attribution"
+                              ? "A world built on open data"
+                              : "Your route directions"
           }
           onClose={() => setModal("")}
         >
-          {["privacy", "settings", "preferences"].includes(modal) && (
+          {["origin", "add-place", "stop", "search"].includes(modal) && (
             <>
-              <div className="modal-intro">
-                <span className="modal-feature-icon">
-                  {modal === "privacy" ? (
-                    <ShieldCheck size={27} />
-                  ) : (
-                    <SlidersHorizontal size={25} />
-                  )}
-                </span>
-                <p>
-                  {modal === "privacy"
-                    ? "You decide what stays. Your saved places and preferences are stored in this browser, with no account required."
-                    : modal === "preferences"
-                      ? "Driving routes use road-network travel time. More routing profiles can be connected to your own routing service."
-                      : "A few small choices to make every journey feel more like you."}
-                </p>
-              </div>
-              <label className="setting-row">
-                <span>
-                  <strong>Remember my trips</strong>
-                  <small>Save started route plans in this browser</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={remember}
-                  onChange={(e) => {
-                    setRemember(e.target.checked);
-                    store("remember", e.target.checked);
+              {modal === "origin" && (
+                <button
+                  className="modal-action"
+                  onClick={() => {
+                    setModal("");
+                    locate();
                   }}
-                />
-                <span className="switch" />
-              </label>
-              <label className="setting-row">
-                <span>
-                  <strong>Voice directions</strong>
-                  <small>Read directions aloud in route preview</small>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={voice}
-                  onChange={(e) => {
-                    setVoice(e.target.checked);
-                    if (!e.target.checked) window.speechSynthesis?.cancel();
-                  }}
-                />
-                <span className="switch" />
-              </label>
-              {modal === "settings" && (
-                <div className="setting-row">
-                  <span>
-                    <strong>Map appearance</strong>
-                    <small>A view that feels right</small>
-                  </span>
-                  <select
-                    value={theme}
-                    onChange={(e) => setTheme(e.target.value)}
-                  >
-                    {["Standard", "Dark", "Terrain"].map((t) => (
-                      <option key={t}>{t}</option>
-                    ))}
-                  </select>
+                >
+                  <LocateFixed size={19} /> Use my current location
+                </button>
+              )}
+              <PlaceSearch
+                {...searchProps}
+                autofocus
+                placeholder={
+                  modal === "origin"
+                    ? "Search a starting point"
+                    : "Search places"
+                }
+                onSelect={(p) => {
+                  rememberSearch(p);
+                  if (modal === "add-place") {
+                    editPlace(p);
+                    return;
+                  }
+                  if (modal === "origin") setOrigin(p);
+                  else if (modal === "stop")
+                    setStops([...stops, p].slice(0, 3));
+                  else chooseDestination(p);
+                  setModal("");
+                }}
+              />
+              {saved.length > 0 && (
+                <div className="modal-saved">
+                  <h3>Your saved places</h3>
+                  {saved.map((p) => (
+                    <button
+                      className="result-row"
+                      key={p.id}
+                      onClick={() => {
+                        if (modal === "origin") setOrigin(p);
+                        else if (modal === "stop")
+                          setStops([...stops, p].slice(0, 3));
+                        else if (modal === "add-place") {
+                          editPlace(p);
+                          return;
+                        } else chooseDestination(p);
+                        setModal("");
+                      }}
+                    >
+                      <MapPin size={17} />
+                      <span>
+                        <strong>{p.name}</strong>
+                        <small>{p.category}</small>
+                      </span>
+                    </button>
+                  ))}
                 </div>
               )}
-              <div className="privacy-explanation">
-                <LockKeyhole size={17} />
-                <p>
-                  Location is requested only when you tap “Find my location.”
-                  Planning a route sends route coordinates to the public OSRM
-                  service. Maps load from OpenFreeMap, OpenStreetMap France, or
-                  OpenTopoMap; these providers receive your IP address and map
-                  requests. Local browser data is not encrypted or synced.
-                </p>
-              </div>
-              <button className="modal-action" onClick={exportData}>
-                <Download size={17} /> Export my data <ArrowUpRight size={15} />
-              </button>
+              {modal === "add-place" && gps.fix && (
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    editPlace(positionPlace(gps.fix!.coords, "My place"))
+                  }
+                >
+                  Save my current location
+                </button>
+              )}
+            </>
+          )}
+          {modal === "save" && editing && (
+            <>
+              <label className="form-label">
+                Place name
+                <input
+                  value={savedName}
+                  maxLength={80}
+                  onChange={(e) => setSavedName(e.target.value)}
+                />
+              </label>
+              <label className="form-label">
+                Category / icon
+                <select
+                  value={savedCategory}
+                  onChange={(e) => setSavedCategory(e.target.value)}
+                >
+                  {savedCategories.map((c) => (
+                    <option key={c}>{c}</option>
+                  ))}
+                </select>
+              </label>
+              <p className="body-copy">
+                {editing.address}
+                <br />
+                {editing.coords[1].toFixed(5)}, {editing.coords[0].toFixed(5)}
+              </p>
               <button
-                className="modal-action danger-text"
-                onClick={() => setModal("delete")}
+                className="primary-button full"
+                disabled={!savedName.trim()}
+                onClick={commitPlace}
               >
-                <Trash2 size={17} /> Delete my local data{" "}
-                <ChevronRight size={15} />
+                <Bookmark size={18} /> Save place
               </button>
             </>
           )}
+          {modal === "options" && formRouteOptions}
           {modal === "profile" && (
             <>
               <div className="profile-intro">
                 <span className="large-avatar">
-                  {name.charAt(0).toUpperCase()}
+                  {profileAvatar === "leaf" ? (
+                    <Leaf size={30} />
+                  ) : profileAvatar === "compass" ? (
+                    <Compass size={30} />
+                  ) : (
+                    profileName.charAt(0).toUpperCase() || "W"
+                  )}
                 </span>
-                <span className="soft-tag">LOCAL PROFILE</span>
-                <p>Your own little corner of the world.</p>
+                <span className="soft-tag">LOCAL PROFILE · THIS DEVICE</span>
               </div>
               <label className="form-label">
                 What should we call you?
                 <input
-                  value={name}
+                  value={profileName}
                   maxLength={40}
-                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                  onChange={(e) => setProfileName(e.target.value)}
                 />
+              </label>
+              <label className="form-label">
+                Avatar
+                <select
+                  value={profileAvatar}
+                  onChange={(e) => setProfileAvatar(e.target.value)}
+                >
+                  <option value="leaf">Leaf</option>
+                  <option value="compass">Compass</option>
+                  <option value="initial">Your initial</option>
+                </select>
               </label>
               <button
                 className="primary-button full"
-                onClick={() => {
-                  store("name", name.trim() || "Traveler");
-                  setName(name.trim() || "Traveler");
-                  setModal("");
-                  notify("Your profile has been updated.");
-                }}
+                onClick={() =>
+                  safe(() => {
+                    setProfile({
+                      name: profileName.trim(),
+                      avatar: profileAvatar,
+                    });
+                    setModal("");
+                    notify("Your local profile is saved.");
+                  })
+                }
               >
-                Save profile <Check size={16} />
+                Save profile <Check size={18} />
               </button>
               <p className="panel-note">
-                This profile stays on this device. Account registration and
-                multi-device sync are not connected yet.
+                No sign-in or cloud account is connected. This profile belongs
+                to this browser.
               </p>
             </>
           )}
-          {modal === "origin" && (
+          {modal === "trip" && tripDetail && (
             <>
+              <span className="category-tag">{tripDetail.mode}</span>
+              <h3>
+                {tripDetail.origin.name} → {tripDetail.destination.name}
+              </h3>
               <p className="body-copy">
-                Start from a saved place, or share your current location.
+                {new Date(tripDetail.startedAt).toLocaleString()}
+                <br />
+                {distance(tripDetail.distance)} ·{" "}
+                {formatDuration(tripDetail.duration)}
+                <br />
+                {tripDetail.points.length} recorded GPS points
               </p>
               <button
-                className="modal-action"
-                onClick={() => {
-                  locate();
-                  setModal("");
-                }}
+                className="primary-button full"
+                onClick={() => replayTrip(tripDetail)}
               >
-                <LocateFixed size={18} /> Use my current GPS location
+                <Play size={17} /> View recorded route
               </button>
-              {places.slice(0, 4).map((p) => (
-                <button
-                  className="modal-place"
-                  key={p.id}
-                  onClick={() => {
-                    requestRef.current?.abort();
-                    requestRef.current = null;
-                    setRouteBusy(false);
-                    setOrigin(p.coords);
-                    setOriginName(p.name);
-                    setRoute({ ...initialRoute, coords: [] });
-                    setNavigating(false);
-                    setModal("");
-                  }}
-                >
-                  <MapPin size={17} />
-                  <span>
-                    <strong>{p.name}</strong>
-                    <small>{p.address}</small>
-                  </span>
-                  <ChevronRight size={15} />
-                </button>
-              ))}
+              <button
+                className="modal-action danger-text"
+                onClick={() =>
+                  ask(
+                    "Delete this trip?",
+                    "Its GPS trace and statistics will be removed.",
+                    () => {
+                      setTrips(trips.filter((t) => t.id !== tripDetail.id));
+                      setModal("");
+                      setReplay([]);
+                      setTripDetail(null);
+                    },
+                  )
+                }
+              >
+                <Trash2 size={18} /> Delete trip
+              </button>
             </>
           )}
-          {["stops", "save-place"].includes(modal) && (
+          {(modal === "directions" || modal.startsWith("directions-")) &&
+            (() => {
+              const item =
+                modal === "directions"
+                  ? { destination, route: activeRoute }
+                  : directions[Number(modal.split("-")[1])];
+              return item?.route ? (
+                <>
+                  <h3>{item.destination?.name}</h3>
+                  <p className="body-copy">
+                    {distance(item.route.distance)} ·{" "}
+                    {formatDuration(item.route.duration)}
+                  </p>
+                  <ol className="directions-list">
+                    {item.route.steps.map((step, i) => (
+                      <li key={i}>
+                        {step.text}
+                        <small> {distance(step.distance)}</small>
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              ) : (
+                <p>No directions are selected.</p>
+              );
+            })()}
+          {modal === "attribution" && (
             <>
               <p className="body-copy">
-                {modal === "stops"
-                  ? "Add up to three places. Your route follows the stop order you choose."
-                  : "Save a destination to make your next visit a little easier."}
+                Waypoint — Find your way, your way.
+                <br />
+                Open geographic data, with credit to the people who make it
+                possible.
               </p>
-              {places
-                .filter((p) =>
-                  modal === "save-place"
-                    ? !saved.includes(p.id)
-                    : p.id !== destination.id &&
-                      !stops.some((s) => s.id === p.id),
-                )
-                .map((p) => (
-                  <button
-                    className="modal-place"
-                    key={p.id}
-                    disabled={modal === "stops" && stops.length >= 3}
-                    onClick={() => {
-                      if (modal === "save-place") savePlace(p);
-                      else {
-                        requestRef.current?.abort();
-                        requestRef.current = null;
-                        setRouteBusy(false);
-                        setStops([...stops, p]);
-                        setRoute({ ...initialRoute, coords: [] });
-                        setNavigating(false);
-                        notify(`${p.name} added as a stop`);
-                      }
-                      setModal("");
-                    }}
-                  >
-                    <MapPin size={17} />
-                    <span>
-                      <strong>{p.name}</strong>
-                      <small>{p.address}</small>
-                    </span>
-                    <Plus size={15} />
-                  </button>
-                ))}
-            </>
-          )}
-          {modal === "map-info" && (
-            <>
-              <div className="modal-intro">
-                <span className="modal-feature-icon">
-                  <Map size={28} />
-                </span>
-                <p>
-                  Good things happen when the world is open. Waypoint uses
-                  community-built map data and open source tools.
-                </p>
-              </div>
               <div className="credits-row">
-                <strong>Map rendering</strong>
-                <a href="https://maplibre.org" target="_blank" rel="noreferrer">
-                  MapLibre GL <ArrowUpRight size={13} />
-                </a>
-              </div>
-              <div className="credits-row">
-                <strong>Geographic data</strong>
+                <strong>Map data</strong>
                 <a
                   href="https://www.openstreetmap.org/copyright"
                   target="_blank"
                   rel="noreferrer"
                 >
-                  OpenStreetMap <ArrowUpRight size={13} />
+                  © OpenStreetMap contributors
                 </a>
               </div>
               <div className="credits-row">
-                <strong>Basemap</strong>
-                <span>OpenFreeMap · OSM France · OpenTopoMap</span>
+                <strong>Vector schema</strong>
+                <a
+                  href="https://openmaptiles.org/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  © OpenMapTiles
+                </a>
               </div>
               <div className="credits-row">
-                <strong>Driving directions</strong>
-                <span>OSRM</span>
+                <strong>Maps</strong>
+                <span>OpenFreeMap · OSM France</span>
+              </div>
+              <div className="credits-row">
+                <strong>Terrain</strong>
+                <span>OpenTopoMap · SRTM</span>
+              </div>
+              <div className="credits-row">
+                <strong>Search & routes</strong>
+                <span>Photon · Valhalla · Overpass</span>
               </div>
               <p className="panel-note">
-                The opening journey and suggestions are illustrative. Route
-                times are estimates without live traffic. Search currently
-                covers curated San Francisco destinations.
+                Provider availability and coverage vary. Route estimates are not
+                live traffic or guaranteed travel times.
               </p>
             </>
           )}
-          {modal === "delete" && (
-            <>
-              <p className="body-copy">
-                This removes your saved places, trips, downloaded directions,
-                and preferences from this browser. This can’t be undone.
-              </p>
-              <button
-                className="danger-button full"
-                onClick={() => {
-                  ["saved", "trips", "offline", "remember", "name"].forEach(
-                    (key) => localStorage.removeItem(`waypoint-${key}`),
-                  );
-                  setSaved([]);
-                  setTrips([]);
-                  setOfflineRoutes([]);
-                  setRemember(false);
-                  setName("Traveler");
-                  setVoice(false);
-                  window.speechSynthesis?.cancel();
-                  setModal("");
-                  notify("Your local data has been deleted.");
-                }}
-              >
-                Delete my local data
-              </button>
-              <button
-                className="outline-button full"
-                onClick={() => setModal("privacy")}
-              >
-                Keep my data
-              </button>
-            </>
-          )}
-          {modal.startsWith("offline-") &&
-            (() => {
-              const savedRoute = offlineRoutes[Number(modal.split("-")[1])];
-              return savedRoute ? (
-                <>
-                  <h3>{savedRoute.name}</h3>
-                  <p className="body-copy">
-                    {savedRoute.route.distance.toFixed(1)} km · About{" "}
-                    {savedRoute.route.duration} min
-                  </p>
-                  <ol className="directions-list">
-                    {savedRoute.route.steps.map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ol>
-                </>
-              ) : null;
-            })()}
-        </Modal>
+        </Dialog>
       )}
-    </div>
-  );
-}
-function Modal({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const previous = document.activeElement as HTMLElement;
-    const element = ref.current;
-    const first = element?.querySelector<HTMLElement>("button,input,select,a");
-    first?.focus();
-    const trap = (event: KeyboardEvent) => {
-      if (event.key !== "Tab" || !element) return;
-      const controls = Array.from(
-        element.querySelectorAll<HTMLElement>(
-          "button:not(:disabled),input,select,a[href]",
-        ),
-      );
-      const first = controls[0];
-      const last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    element?.addEventListener("keydown", trap);
-    return () => {
-      previous?.focus();
-      element?.removeEventListener("keydown", trap);
-    };
-  }, []);
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div
-        ref={ref}
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="modal-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-heading">
-          <h2 id="modal-title">{title}</h2>
-          <button
-            className="icon-button"
-            aria-label="Close dialog"
-            onClick={onClose}
-          >
-            <X size={20} />
-          </button>
-        </div>
-        {children}
-      </div>
     </div>
   );
 }

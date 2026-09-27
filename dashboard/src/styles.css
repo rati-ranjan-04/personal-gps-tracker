@@ -2279,17 +2279,7 @@ button:hover:not(:disabled) {
   background: #fff;
   color: #4d6a3b;
 }
-.tracker-link {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 10px;
-  color: #7a9462;
-  text-decoration: underline;
-  margin-top: 20px;
-  text-underline-offset: 4px;
-}
+
 .modal-place {
   display: flex;
   align-items: center;

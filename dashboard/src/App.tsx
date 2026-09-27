@@ -1505,9 +1505,6 @@ function App() {
                 This profile stays on this device. Account registration and
                 multi-device sync are not connected yet.
               </p>
-              <a className="tracker-link" href="/tracker.html">
-                Open secure device tracking <ArrowUpRight size={15} />
-              </a>
             </>
           )}
           {modal === "origin" && (
